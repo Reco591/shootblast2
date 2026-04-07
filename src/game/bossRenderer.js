@@ -133,22 +133,75 @@ export function drawBossProjectiles(ctx, projectiles, boss) {
 }
 
 export function drawBossWarning(ctx, boss, timer) {
-  // 3 discrete flashes: each flash is 60 frames (30 on, 30 off)
-  const flashCycle = timer % 60;
-  const visible = flashCycle < 30;
-  if (!visible) return;
+  // timer counts DOWN from 150 to 0
+  // elapsed = how far into the intro we are (0 → 150)
+  const elapsed = 150 - timer;
+  const duration = 150;
+  const t = elapsed / duration;
 
-  ctx.globalAlpha = 0.7 + Math.sin(flashCycle * 0.2) * 0.3;
-  ctx.fillStyle = "#ff2222";
-  ctx.font = "800 28px 'Sora', sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("WARNING", CANVAS_W / 2, CANVAS_H / 2 - 40);
-  ctx.font = "500 14px 'Sora', sans-serif";
-  ctx.fillStyle = "#ffffff";
-  ctx.fillText(boss.name, CANVAS_W / 2, CANVAS_H / 2);
-  ctx.font = "400 11px 'Sora', sans-serif";
-  ctx.globalAlpha *= 0.6;
-  ctx.fillText(boss.planet + " orbit guardian", CANVAS_W / 2, CANVAS_H / 2 + 25);
+  // Phase 1: WARNING (0-60 frames) — red flashing text
+  if (elapsed < 60) {
+    const flash = Math.sin(elapsed * 0.5) > 0;
+    if (flash) {
+      ctx.fillStyle = "rgba(255,0,40,0.15)";
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    }
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "900 32px 'Sora', sans-serif";
+    ctx.fillStyle = "#ff3344";
+    ctx.shadowColor = "#ff0033";
+    ctx.shadowBlur = 25;
+
+    const scale = 1 + Math.sin(elapsed * 0.3) * 0.05;
+    ctx.save();
+    ctx.translate(CANVAS_W / 2, CANVAS_H / 2 - 50);
+    ctx.scale(scale, scale);
+    ctx.fillText("\u26A0 WARNING \u26A0", 0, 0);
+    ctx.restore();
+
+    ctx.font = "600 13px 'Sora', sans-serif";
+    ctx.fillStyle = "#ff6666";
+    ctx.shadowBlur = 10;
+    ctx.fillText("BOSS APPROACHING", CANVAS_W / 2, CANVAS_H / 2 - 20);
+    ctx.restore();
+  }
+
+  // Phase 2: REVEAL (60-120 frames) — boss name appears
+  if (elapsed >= 60 && elapsed < 120) {
+    const t2 = (elapsed - 60) / 60;
+
+    // Dark overlay
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(0.5, t2)})`;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.globalAlpha = Math.min(1, t2 * 2);
+
+    ctx.font = "900 36px 'Sora', sans-serif";
+    ctx.fillStyle = boss.color || "#ffffff";
+    ctx.shadowColor = boss.color || "#ffffff";
+    ctx.shadowBlur = 30;
+    ctx.fillText(boss.name, CANVAS_W / 2, CANVAS_H / 2 - 10);
+
+    ctx.font = "600 11px 'Sora', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.shadowBlur = 6;
+    const subtitle = boss.subtitle || ("Guardian of " + (boss.planet || "this sector"));
+    ctx.fillText(subtitle.toUpperCase(), CANVAS_W / 2, CANVAS_H / 2 + 18);
+
+    ctx.restore();
+  }
+
+  // Phase 3: READY (120-150 frames) — bright flash transition
+  if (elapsed >= 120) {
+    const t3 = (elapsed - 120) / 30;
+    ctx.fillStyle = `rgba(255,255,255,${(1 - t3) * 0.3})`;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  }
+
   ctx.globalAlpha = 1;
 }
 

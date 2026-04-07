@@ -84,6 +84,10 @@ export function playCoinCollect() {
   });
 }
 
+export function playCoinPickup() {
+  playTone(1200, 0.06, "sine", 0.08);
+}
+
 export function playDailyReward() {
   [523, 659, 784, 1047].forEach((freq, i) => {
     setTimeout(() => playTone(freq, 0.2, "triangle", 0.15), i * 80);
@@ -150,6 +154,21 @@ export function playCombo() {
   osc.stop(ctx.currentTime + 0.15);
 }
 
+export function playComboBreak() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(440, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.4);
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+  osc.connect(gain);
+  gain.connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.5);
+}
+
 export function playWaveStart() {
   playTone(300, 0.3, "sawtooth", 0.08);
   setTimeout(() => playTone(450, 0.3, "sawtooth", 0.08), 150);
@@ -176,6 +195,21 @@ export function playAchievement() {
       playTone(freq * 1.5, 0.15, "triangle", 0.06);
     }, i * 60);
   });
+}
+
+export function playLowHp() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(880, ctx.currentTime);
+  osc.frequency.setValueAtTime(440, ctx.currentTime + 0.1);
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+  osc.connect(gain);
+  gain.connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.3);
 }
 
 // ─── BOSS SOUNDS ───
@@ -330,10 +364,31 @@ export function setMusicEnabled(enabled) {
   if (!enabled) stopAmbient();
 }
 
+export function setSoundVolume(volume) {
+  // volume: 0-100
+  const v = Math.max(0, Math.min(100, volume)) / 100;
+  if (sfxGain) sfxGain.gain.value = v * 0.5;
+}
+
+export function setMusicVolume(volume) {
+  // volume: 0-100
+  const v = Math.max(0, Math.min(100, volume)) / 100;
+  if (musicGain) musicGain.gain.value = v * 0.3;
+  if (volume === 0) stopAmbient();
+}
+
 // ─── INIT ───
 // Call this on first user interaction (touch/click)
-export function initAudio(soundEnabled, musicEnabled) {
+export function initAudio(soundEnabled, musicEnabled, soundVolume, musicVolume) {
   getCtx();
-  setSoundEnabled(soundEnabled);
-  setMusicEnabled(musicEnabled);
+  if (soundVolume != null) {
+    setSoundVolume(soundVolume);
+  } else {
+    setSoundEnabled(soundEnabled);
+  }
+  if (musicVolume != null) {
+    setMusicVolume(musicVolume);
+  } else {
+    setMusicEnabled(musicEnabled);
+  }
 }

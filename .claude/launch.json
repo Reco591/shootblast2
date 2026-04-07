@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "shootblast",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite"],
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "export PATH=/opt/homebrew/bin:$PATH && npx vite"],
       "port": 5173
     }
   ]

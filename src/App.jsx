@@ -10,7 +10,7 @@ export default function App() {
   const [playerData, setPlayerData] = useState(getPlayerData());
 
   const handleGameOver = (s) => {
-    const result = recordGame(s.distance, s.kills, s.wave, s.bestCombo || 0, s.playTime || 0, s.powerupsCollected || 0, s.noHitWaves || 0, s.defeatedBosses || [], s.bossCoinsEarned || 0);
+    const result = recordGame(s.distance, s.kills, s.wave, s.bestCombo || 0, s.playTime || 0, s.powerupsCollected || 0, s.noHitWaves || 0, s.defeatedBosses || [], s.bossCoinsEarned || 0, s.weaponId || "blaster", s.nukesUsed || 0, s.abilitiesUsed || 0);
     setPlayerData(result);
     setStats({
       ...s,
@@ -35,6 +35,8 @@ export default function App() {
           skinId={playerData.equippedSkin}
           weaponId={playerData.equippedWeapon || "blaster"}
           weaponLevel={(playerData.ownedWeapons || [{ id: "blaster", level: 0 }]).find(w => w.id === (playerData.equippedWeapon || "blaster"))?.level || 0}
+          pilotId={playerData.equippedPilot || "rebel"}
+          equippedDrones={playerData.equippedDrones || []}
           sensitivity={playerData.sensitivity}
           soundEnabled={playerData.soundEnabled}
           vibrationEnabled={playerData.vibrationEnabled}

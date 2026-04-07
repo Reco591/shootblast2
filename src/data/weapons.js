@@ -10,8 +10,11 @@ function generateLevels(base, increments, count = 20) {
       speed: Math.round((base.speed + increments.speed * i) * 10) / 10,
       size: Math.round((base.size + increments.size * i) * 10) / 10,
       ...(base.spread !== undefined && { spread: Math.round(base.spread + increments.spread * i) }),
-      ...(base.beam && { beam: true, beamWidth: Math.round((base.beamWidth + increments.beamWidth * i) * 10) / 10 }),
       ...(base.homing && { homing: true, turnRate: Math.round((base.turnRate + increments.turnRate * i) * 10) / 10 }),
+      ...(base.chains !== undefined && {
+        chains: Math.floor(base.chains + increments.chains * i),
+        chainRange: Math.round(base.chainRange + increments.chainRange * i),
+      }),
     });
   }
   return levels;
@@ -75,14 +78,15 @@ export const WEAPONS = [
     upgradeCosts: generateUpgradeCosts(1200),
   },
   {
-    id: "laser",
-    name: "BEAM RIFLE",
-    desc: "Continuous energy beam",
-    color: "#ff3366",
+    id: "lightning",
+    name: "LIGHTNING CHAIN",
+    desc: "Strikes one target, jumps to nearby enemies",
+    color: "#88ddff",
     price: 2000,
     levels: generateLevels(
-      { dmg: 1, fireRate: 35, bullets: 1, speed: 20, size: 2, beam: true, beamWidth: 2.5 },
-      { dmg: 0.12, fireRate: 0.7, bullets: 0.05, speed: 0, size: 0.05, beamWidth: 0.2 }
+      { dmg: 2, fireRate: 180, bullets: 1, speed: 12, size: 4, chains: 2, chainRange: 80 },
+      { dmg: 0.2, fireRate: 4, bullets: 0, speed: 0.15, size: 0.1, chains: 0.15, chainRange: 3 }
+      // chains: 2→4 over 20 levels, chainRange: 80→137
     ),
     upgradeCosts: generateUpgradeCosts(2000),
   },

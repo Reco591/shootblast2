@@ -16,8 +16,13 @@ export const METEOR_TYPES = [
 ];
 
 export const POWERUP_TYPES = [
-  { type: "shield", color: "#00e5ff", duration: 5000 },
-  { type: "rapid", color: "#ffff00", duration: 4000 },
-  { type: "triple", color: "#ff00ff", duration: 5000 },
-  { type: "life", color: "#00ff00", duration: 0 },
+  { type: "shield",    color: "#00e5ff", duration: 5000 },
+  { type: "rapid",     color: "#ffff00", duration: 4000 },
+  { type: "triple",    color: "#ff00ff", duration: 5000 },
+  { type: "life",      color: "#00ff00", duration: 0 },
+  { type: "slowtime",  color: "#88ddff", duration: 4000 },
+  { type: "magnet",    color: "#aa55ff", duration: 6000 },
+  { type: "doublepts", color: "#ffaa00", duration: 6000 },
+  { type: "freeze",    color: "#5599ff", duration: 3000 },
+  { type: "nuke",      color: "#ff3333", duration: 0 },
 ];

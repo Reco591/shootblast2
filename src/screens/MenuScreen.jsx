@@ -6,18 +6,30 @@ import {
 } from "lucide-react";
 import { formatDistance } from "../utils/formatDistance.js";
 import { getSkin, SKINS, getTagColor } from "../data/skins.js";
-import { buySkin, equipSkin, updateSettings, resetAllData, getMissions, claimMission, claimDailyReward as claimDailyRewardFn, buyWeapon, upgradeWeapon, equipWeapon } from "../data/playerData.js";
+import { buySkin, equipSkin, updateSettings, resetAllData, getMissions, claimMission, claimDailyReward as claimDailyRewardFn, buyWeapon, upgradeWeapon, equipWeapon, buyPilot, equipPilot, buyDrone, equipDrone, unequipDrone } from "../data/playerData.js";
 import { WEAPONS, getWeapon, MAX_WEAPON_LEVEL } from "../data/weapons.js";
+import { renderCustomShip } from "../components/CustomShips.jsx";
+import { PilotHelmet } from "../components/PilotHelmet.jsx";
+import { PILOTS, getPilotTagColor } from "../data/pilots.js";
+import { DRONES, getDrone, getDroneTagColor } from "../data/drones.js";
 import { MISSION_POOL } from "../data/missions.js";
-import { ACHIEVEMENTS } from "../data/achievements.js";
+import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES, getAchievementsByCategory, getCategory } from "../data/achievements.js";
 import { DAILY_REWARDS, checkDailyReward as checkDailyRewardFn } from "../data/dailyReward.js";
 import {
   initAudio, playClick, playConfirm, playSheetOpen, playSheetClose,
   playCoinCollect, playDailyReward as playDailyRewardSound,
   startAmbient, stopAmbient, setSoundEnabled, setMusicEnabled,
+  setSoundVolume, setMusicVolume,
 } from "../audio/soundManager.js";
 
 const W = 420, H = 812, CX = W / 2, CY = H / 2 - 30;
+
+function fmtAchNum(n) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
 
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -70,6 +82,29 @@ function SettingRow({ icon, label, value, onChange, accent }) {
   );
 }
 
+function VolumeSlider({ icon, label, value, onChange, accent }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <div style={{ color: "rgba(255,255,255,0.4)" }}>{icon}</div>
+        <span style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.7)", letterSpacing: 0.5 }}>{label}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          type="range"
+          min="0" max="100" step="5"
+          value={value}
+          onChange={(e) => onChange(parseInt(e.target.value))}
+          style={{ width: 80, accentColor: accent || "#00aaff" }}
+        />
+        <span style={{ fontSize: 11, fontWeight: 600, color: value > 0 ? (accent || "#00aaff") : "rgba(255,255,255,0.2)", minWidth: 28, textAlign: "right" }}>
+          {value}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ icon, label, value, accent }) {
   return (
     <div style={{
@@ -116,6 +151,8 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
   const [showCards, setShowCards] = useState(false);
   const [sheet, setSheet] = useState(null);
   const [bp, setBp] = useState(false);
+  const [hangarMode, setHangarMode] = useState("ships");
+  const [achCat, setAchCat] = useState("kills");
   const [showDailyReward, setShowDailyReward] = useState(false);
   const [dailyRewardInfo, setDailyRewardInfo] = useState(null);
   const [rewardClaimed, setRewardClaimed] = useState(false);
@@ -176,7 +213,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
   useEffect(() => {
     if (!showCards) return;
     if (playerData.musicEnabled) {
-      initAudio(playerData.soundEnabled, playerData.musicEnabled);
+      initAudio(playerData.soundEnabled, playerData.musicEnabled, playerData.soundVolume, playerData.musicVolume);
       startAmbient();
     }
     const check = checkDailyRewardFn(playerData);
@@ -391,7 +428,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
   }, [menuMode, warpT]);
 
   return (
-    <div style={z.root} onTouchStart={() => initAudio(playerData.soundEnabled, playerData.musicEnabled)} onClick={() => initAudio(playerData.soundEnabled, playerData.musicEnabled)}>
+    <div style={z.root} onTouchStart={() => initAudio(playerData.soundEnabled, playerData.musicEnabled, playerData.soundVolume, playerData.musicVolume)} onClick={() => initAudio(playerData.soundEnabled, playerData.musicEnabled, playerData.soundVolume, playerData.musicVolume)}>
       <canvas ref={cvs} width={W} height={H} style={z.cvs} />
 
       <div style={{ ...z.flash, opacity: whiteFlash, pointerEvents: "none" }} />
@@ -399,6 +436,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
       {showShip && (
         <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",zIndex:4,animation:"shipIn 0.7s cubic-bezier(0.34,1.4,0.64,1) forwards",pointerEvents:"none",filter:`drop-shadow(0 15px 50px ${hexToRgba(skin.accent, 0.2)})`}}>
           <div style={{position:"relative",width:280,height:340,animation:"bob 4s ease-in-out infinite"}}>
+            {skin.customShip ? renderCustomShip(skin.shipType, undefined, playerData.equippedPilot || "rebel") : (
             <svg width="280" height="340" viewBox="0 0 280 340" fill="none" xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <linearGradient id="hull" x1="140" y1="20" x2="140" y2="280" gradientUnits="userSpaceOnUse">
@@ -495,11 +533,9 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
 
               <circle cx="140" cy="86" r="15" fill="#2a2a52" stroke={hexToRgba(skin.accent, 0.1)} strokeWidth="0.6"/>
               <circle cx="140" cy="86" r="16" fill="none" stroke={hexToRgba(skin.accent, 0.06)} strokeWidth="0.4"/>
-              <path d="M128 82 Q129 76 140 74 Q151 76 152 82 L152 92 Q151 96 140 97 Q129 96 128 92Z" fill={hexToRgba(skin.visor, 0.55)} filter="url(#gl)">
-                <animate attributeName="fill" values={`${hexToRgba(skin.visor, 0.55)};${hexToRgba(skin.visor, 0.7)};${hexToRgba(skin.visor, 0.55)}`} dur="2.5s" repeatCount="indefinite"/>
-              </path>
-              <ellipse cx="134" cy="80" rx="5" ry="3" fill="rgba(255,255,255,0.16)"/>
-              <ellipse cx="147" cy="91" rx="3" ry="1.5" fill="rgba(255,255,255,0.05)"/>
+              <g transform="translate(128, 72)">
+                <PilotHelmet pilotId={playerData.equippedPilot || "rebel"} size={24} />
+              </g>
               <line x1="140" y1="72" x2="140" y2="99" stroke={hexToRgba(skin.visor, 0.08)} strokeWidth="0.4"/>
               <rect x="122" y="82" width="5" height="9" rx="2" fill="#1e1e42" stroke={hexToRgba(skin.accent, 0.08)} strokeWidth="0.4"/>
               <rect x="153" y="82" width="5" height="9" rx="2" fill="#1e1e42" stroke={hexToRgba(skin.accent, 0.08)} strokeWidth="0.4"/>
@@ -523,6 +559,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                 <animate attributeName="stroke-opacity" values="0.03;0.07;0.03" dur="3s" repeatCount="indefinite"/>
               </ellipse>
             </svg>
+            )}
           </div>
         </div>
       )}
@@ -585,7 +622,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
           { k: "missions", l: "Missions", s: unclaimedCount > 0 ? `${unclaimedCount} active` : "All done", I: Target, c: "#00aaff" },
           { k: "hangar", l: "Hangar", s: `${SKINS.length} ships`, I: Rocket, c: "#aa55ff" },
           { k: "armory", l: "Armory", s: `${WEAPONS.length} weapons`, I: Crosshair, c: "#ff5544" },
-          { k: "awards", l: "Awards", s: `${(playerData.unlockedAchievements || []).length}/${ACHIEVEMENTS.length}`, I: Trophy, c: "#ffaa00" },
+          { k: "awards", l: "Awards", s: `${(playerData.achievements?.unlocked || []).length}/${ACHIEVEMENTS.length}`, I: Trophy, c: "#ffaa00" },
           { k: "stats", l: "Stats", s: "Lifetime", I: BarChart3, c: "#00ddaa" },
         ].map(c => (
           <button key={c.k} style={{ ...z.card, ...(c.k === "hangar" ? { borderColor: hexToRgba(skin.accent, 0.15) } : {}) }} onClick={() => { playSheetOpen(); setSheet(c.k); }}>
@@ -735,6 +772,115 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
             );
           })()}
           {sheet === "hangar" && (
+            <div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button onClick={() => setHangarMode("ships")} style={{
+                flex: 1, padding: "10px", borderRadius: 10,
+                background: hangarMode === "ships" ? "#00aaff" : "rgba(255,255,255,0.05)",
+                color: hangarMode === "ships" ? "#000" : "#888",
+                border: "none", fontWeight: 600, fontSize: 11, letterSpacing: 1.5, cursor: "pointer",
+                fontFamily: "'Sora',sans-serif",
+              }}>SHIPS</button>
+              <button onClick={() => setHangarMode("pilots")} style={{
+                flex: 1, padding: "10px", borderRadius: 10,
+                background: hangarMode === "pilots" ? "#00aaff" : "rgba(255,255,255,0.05)",
+                color: hangarMode === "pilots" ? "#000" : "#888",
+                border: "none", fontWeight: 600, fontSize: 11, letterSpacing: 1.5, cursor: "pointer",
+                fontFamily: "'Sora',sans-serif",
+              }}>PILOTS</button>
+              <button onClick={() => setHangarMode("drones")} style={{
+                flex: 1, padding: "10px", borderRadius: 10,
+                background: hangarMode === "drones" ? "#00aaff" : "rgba(255,255,255,0.05)",
+                color: hangarMode === "drones" ? "#000" : "#888",
+                border: "none", fontWeight: 600, fontSize: 11, letterSpacing: 1.5, cursor: "pointer",
+                fontFamily: "'Sora',sans-serif",
+              }}>DRONES</button>
+            </div>
+            {hangarMode === "pilots" && (
+              <div style={z.sg}>
+                {PILOTS.map(pl => {
+                  const owned = (playerData.ownedPilots || ["rebel"]).includes(pl.id);
+                  const equipped = (playerData.equippedPilot || "rebel") === pl.id;
+                  const canAfford = playerData.coins >= pl.price;
+                  const tagCol = getPilotTagColor(pl.tag);
+
+                  return (
+                    <div key={pl.id} style={{
+                      ...z.sc,
+                      borderColor: equipped ? (pl.accent === "#222244" ? "#6666aa" : pl.accent) : "rgba(255,255,255,0.04)",
+                    }}>
+                      <div style={{ width: 60, height: 70, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <PilotHelmet pilotId={pl.id} size={48} />
+                      </div>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: pl.accent === "#222244" ? "#8888cc" : pl.accent, letterSpacing: 2 }}>
+                        {pl.name}
+                      </span>
+                      <span style={{
+                        fontSize: 7, fontWeight: 600, color: tagCol,
+                        letterSpacing: 2, padding: "2px 6px",
+                        border: `1px solid ${tagCol}44`,
+                        borderRadius: 4,
+                      }}>
+                        {pl.tag}
+                      </span>
+                      <span style={{ fontSize: 8, color: "rgba(255,255,255,0.4)", fontWeight: 500, textAlign: "center", lineHeight: 1.3 }}>
+                        {pl.bonus.label}
+                      </span>
+
+                      {equipped && (
+                        <span style={{ fontSize: 7, color: "#00dd78", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
+                          <Check size={10} /> ACTIVE
+                        </span>
+                      )}
+
+                      {owned && !equipped && (
+                        <button
+                          onClick={() => {
+                            playConfirm();
+                            const newData = equipPilot(pl.id);
+                            onDataChange(newData);
+                          }}
+                          style={{
+                            fontSize: 8, fontWeight: 700, color: "#fff",
+                            background: pl.accent === "#222244" ? "#6666aa" : pl.accent, border: "none",
+                            borderRadius: 6, padding: "4px 14px", cursor: "pointer",
+                            fontFamily: "'Sora',sans-serif",
+                          }}
+                        >
+                          SELECT
+                        </button>
+                      )}
+
+                      {!owned && (
+                        <button
+                          disabled={!canAfford}
+                          onClick={() => {
+                            if (!canAfford) return;
+                            playConfirm();
+                            const result = buyPilot(pl.id, pl.price);
+                            if (result.success) onDataChange(result.data);
+                          }}
+                          style={{
+                            fontSize: 9, fontWeight: 700,
+                            color: canAfford ? "#fff" : "rgba(255,255,255,0.25)",
+                            background: canAfford ? (pl.accent === "#222244" ? "#6666aa" : pl.accent) : "rgba(255,255,255,0.05)",
+                            border: canAfford ? "none" : "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 6, padding: "4px 14px", cursor: canAfford ? "pointer" : "default",
+                            display: "flex", alignItems: "center", gap: 4,
+                            opacity: canAfford ? 1 : 0.5,
+                            fontFamily: "'Sora',sans-serif",
+                          }}
+                        >
+                          <Gem size={11} color={canAfford ? "#fff" : "#666"} />
+                          BUY & EQUIP · {pl.price.toLocaleString()}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {hangarMode === "ships" && (
             <div style={z.sg}>
               {SKINS.map(sk => {
                 const owned = playerData.ownedSkins.includes(sk.id);
@@ -747,11 +893,17 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                     ...z.sc,
                     borderColor: equipped ? sk.accent : "rgba(255,255,255,0.04)",
                   }}>
-                    <div style={{
-                      width: 28, height: 28, borderRadius: 8,
-                      background: `linear-gradient(135deg, ${sk.accent}, ${darkenHex(sk.accent)})`,
-                      boxShadow: `0 0 16px ${hexToRgba(sk.accent, 0.4)}`,
-                    }} />
+                    {sk.customShip ? (
+                      <div style={{ width: 40, height: 48, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {renderCustomShip(sk.shipType, 40)}
+                      </div>
+                    ) : (
+                      <div style={{
+                        width: 28, height: 28, borderRadius: 8,
+                        background: `linear-gradient(135deg, ${sk.accent}, ${darkenHex(sk.accent)})`,
+                        boxShadow: `0 0 16px ${hexToRgba(sk.accent, 0.4)}`,
+                      }} />
+                    )}
                     <span style={{ fontSize: 10, fontWeight: 700, color: sk.accent, letterSpacing: 2 }}>
                       {sk.name}
                     </span>
@@ -807,12 +959,155 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                         }}
                       >
                         <Gem size={11} color={canAfford ? "#fff" : "#666"} />
-                        {sk.price.toLocaleString()}
+                        BUY & EQUIP · {sk.price.toLocaleString()}
                       </button>
                     )}
                   </div>
                 );
               })}
+            </div>
+            )}
+            {hangarMode === "drones" && (
+              <div>
+                {/* Equipped drone slots */}
+                <div style={{ marginBottom: 12, padding: "10px 12px", background: "rgba(255,255,255,0.02)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <p style={{ fontSize: 8, fontWeight: 600, color: "rgba(255,255,255,0.4)", letterSpacing: 2, marginBottom: 8 }}>
+                    EQUIPPED ({(playerData.equippedDrones || []).length}/2)
+                  </p>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[0, 1].map(slot => {
+                      const droneId = (playerData.equippedDrones || [])[slot];
+                      const drone = droneId ? getDrone(droneId) : null;
+                      return (
+                        <div key={slot} style={{
+                          flex: 1, padding: "8px", borderRadius: 8, textAlign: "center",
+                          background: drone ? `${drone.color}15` : "rgba(255,255,255,0.02)",
+                          border: drone ? `1px solid ${drone.color}44` : "1px dashed rgba(255,255,255,0.1)",
+                          cursor: drone ? "pointer" : "default",
+                        }} onClick={() => {
+                          if (drone) {
+                            playClick();
+                            onDataChange(unequipDrone(slot));
+                          }
+                        }}>
+                          {drone ? (
+                            <>
+                              <div style={{ width: 20, height: 20, borderRadius: 10, background: drone.color, margin: "0 auto 4px", boxShadow: `0 0 8px ${drone.color}66` }} />
+                              <span style={{ fontSize: 7, fontWeight: 700, color: drone.color, letterSpacing: 1 }}>{drone.name}</span>
+                              <p style={{ fontSize: 6, color: "rgba(255,255,255,0.3)", marginTop: 2 }}>TAP TO REMOVE</p>
+                            </>
+                          ) : (
+                            <span style={{ fontSize: 8, color: "rgba(255,255,255,0.15)", fontWeight: 600 }}>EMPTY</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Drones grid */}
+                <div style={z.sg}>
+                  {DRONES.map(drone => {
+                    const isOwned = (playerData.ownedDrones || []).includes(drone.id);
+                    const isEquipped = (playerData.equippedDrones || []).includes(drone.id);
+                    const canAfford = playerData.coins >= drone.price;
+                    const slotsFull = (playerData.equippedDrones || []).length >= 2;
+                    const tagCol = getDroneTagColor(drone.tag);
+
+                    return (
+                      <div key={drone.id} style={{
+                        ...z.sc,
+                        borderColor: isEquipped ? drone.color : "rgba(255,255,255,0.04)",
+                      }}>
+                        <div style={{
+                          width: 36, height: 36, borderRadius: 18,
+                          background: `${drone.color}20`,
+                          border: `1px solid ${drone.color}44`,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                        }}>
+                          <div style={{
+                            width: 18, height: 18, borderRadius: 9,
+                            background: drone.color,
+                            boxShadow: `0 0 10px ${drone.color}88`,
+                          }} />
+                        </div>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: drone.color, letterSpacing: 2 }}>
+                          {drone.name}
+                        </span>
+                        <span style={{
+                          fontSize: 7, fontWeight: 600, color: tagCol,
+                          letterSpacing: 2, padding: "2px 6px",
+                          border: `1px solid ${tagCol}44`,
+                          borderRadius: 4,
+                        }}>
+                          {drone.tag}
+                        </span>
+                        <span style={{ fontSize: 7, color: "rgba(255,255,255,0.4)", fontWeight: 500, textAlign: "center", lineHeight: 1.3 }}>
+                          {drone.desc}
+                        </span>
+                        <div style={{ display: "flex", gap: 6, fontSize: 7, color: "rgba(255,255,255,0.3)" }}>
+                          <span>DMG {drone.bulletDmg}</span>
+                          <span>·</span>
+                          <span>SPD {drone.bulletSpeed}</span>
+                        </div>
+
+                        {isEquipped && (
+                          <span style={{ fontSize: 7, color: "#00dd78", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
+                            <Check size={10} /> EQUIPPED
+                          </span>
+                        )}
+
+                        {isOwned && !isEquipped && !slotsFull && (
+                          <button
+                            onClick={() => {
+                              playConfirm();
+                              onDataChange(equipDrone(drone.id, (playerData.equippedDrones || []).length));
+                            }}
+                            style={{
+                              fontSize: 8, fontWeight: 700, color: "#fff",
+                              background: drone.color, border: "none",
+                              borderRadius: 6, padding: "4px 14px", cursor: "pointer",
+                              fontFamily: "'Sora',sans-serif",
+                            }}
+                          >
+                            EQUIP
+                          </button>
+                        )}
+
+                        {isOwned && !isEquipped && slotsFull && (
+                          <span style={{ fontSize: 7, color: "rgba(255,255,255,0.25)", fontWeight: 600 }}>SLOTS FULL</span>
+                        )}
+
+                        {!isOwned && (
+                          <button
+                            disabled={!canAfford}
+                            onClick={() => {
+                              if (!canAfford) return;
+                              playConfirm();
+                              const result = buyDrone(drone.id, drone.price);
+                              if (result.success) onDataChange(result.data);
+                            }}
+                            style={{
+                              fontSize: 9, fontWeight: 700,
+                              color: canAfford ? "#fff" : "rgba(255,255,255,0.25)",
+                              background: canAfford ? drone.color : "rgba(255,255,255,0.05)",
+                              border: canAfford ? "none" : "1px solid rgba(255,255,255,0.08)",
+                              borderRadius: 6, padding: "4px 14px", cursor: canAfford ? "pointer" : "default",
+                              display: "flex", alignItems: "center", gap: 4,
+                              opacity: canAfford ? 1 : 0.5,
+                              fontFamily: "'Sora',sans-serif",
+                            }}
+                          >
+                            <Gem size={11} color={canAfford ? "#fff" : "#666"} />
+                            {drone.price.toLocaleString()}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             </div>
           )}
           {sheet === "armory" && (() => {
@@ -982,7 +1277,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                             }}
                           >
                             <Gem size={11} color={canBuy ? "#fff" : "#666"} />
-                            {wp.price.toLocaleString()}
+                            BUY & EQUIP · {wp.price.toLocaleString()}
                           </button>
                         )}
                       </div>
@@ -993,13 +1288,15 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
             );
           })()}
           {sheet === "awards" && (() => {
-            const unlocked = playerData.unlockedAchievements || [];
+            const achData = playerData.achievements || { unlocked: [], progress: {} };
+            const unlocked = achData.unlocked || [];
+            const progress = achData.progress || {};
             const totalReward = ACHIEVEMENTS.reduce((sum, a) => sum + a.reward, 0);
             const earnedReward = ACHIEVEMENTS.filter(a => unlocked.includes(a.id)).reduce((sum, a) => sum + a.reward, 0);
 
             return (
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div>
                     <h2 style={z.shT}>Achievements</h2>
                     <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", letterSpacing: 2, marginTop: 2 }}>
@@ -1014,15 +1311,15 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                   }}>
                     <Gem size={11} color="#ffaa00" />
                     <span style={{ fontSize: 10, fontWeight: 600, color: "#ffaa00" }}>
-                      {earnedReward} / {totalReward}
+                      {earnedReward.toLocaleString()} / {totalReward.toLocaleString()}
                     </span>
                   </div>
                 </div>
 
-                {/* Progress bar */}
+                {/* Overall progress bar */}
                 <div style={{
                   height: 4, borderRadius: 2, background: "rgba(255,255,255,0.06)",
-                  overflow: "hidden", marginBottom: 16,
+                  overflow: "hidden", marginBottom: 12,
                 }}>
                   <div style={{
                     height: "100%", borderRadius: 2,
@@ -1032,78 +1329,137 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                   }} />
                 </div>
 
-                {ACHIEVEMENTS.map(ach => {
-                  const isUnlocked = unlocked.includes(ach.id);
-                  const currentValue = (() => {
-                    const stats = { ...playerData, ownedSkinsCount: playerData.ownedSkins?.length || 1 };
-                    return stats[ach.key] || 0;
-                  })();
-                  const pct = Math.min(100, (currentValue / ach.target) * 100);
+                {/* Category tabs - horizontal scroll */}
+                <div style={{
+                  display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, marginBottom: 10,
+                  scrollbarWidth: "none", msOverflowStyle: "none",
+                }}>
+                  {ACHIEVEMENT_CATEGORIES.map(cat => {
+                    const items = getAchievementsByCategory(cat.id);
+                    const catUnlocked = items.filter(a => unlocked.includes(a.id)).length;
+                    const isSelected = (achCat || "kills") === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => { setAchCat(cat.id); playClick(); }}
+                        style={{
+                          padding: "5px 10px", borderRadius: 8, border: "1px solid",
+                          borderColor: isSelected ? cat.color : "rgba(255,255,255,0.06)",
+                          background: isSelected ? `${cat.color}12` : "rgba(255,255,255,0.02)",
+                          cursor: "pointer", flexShrink: 0, display: "flex", flexDirection: "column",
+                          alignItems: "center", gap: 2, minWidth: 70,
+                        }}
+                      >
+                        <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.5, color: isSelected ? cat.color : "rgba(255,255,255,0.3)" }}>
+                          {cat.name}
+                        </span>
+                        <span style={{ fontSize: 8, color: isSelected ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.15)" }}>
+                          {catUnlocked}/{items.length}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-                  return (
-                    <div key={ach.id} style={{
-                      display: "flex", alignItems: "center", gap: 12,
-                      padding: "12px 14px", borderRadius: 12, marginBottom: 6,
-                      background: isUnlocked ? "rgba(255,170,0,0.03)" : "rgba(255,255,255,0.015)",
-                      border: `1px solid ${isUnlocked ? "rgba(255,170,0,0.08)" : "rgba(255,255,255,0.04)"}`,
-                      opacity: isUnlocked ? 1 : 0.55,
-                    }}>
-                      <div style={{
-                        width: 38, height: 38, borderRadius: 10,
-                        background: isUnlocked ? "rgba(255,170,0,0.08)" : "rgba(255,255,255,0.03)",
-                        border: `1px solid ${isUnlocked ? "rgba(255,170,0,0.15)" : "rgba(255,255,255,0.05)"}`,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0,
+                {/* Achievement list for selected category */}
+                {(() => {
+                  const selectedCat = achCat || "kills";
+                  const cat = getCategory(selectedCat);
+                  const catColor = cat ? cat.color : "#ffaa00";
+                  return getAchievementsByCategory(selectedCat).map(ach => {
+                    const isUnlocked = unlocked.includes(ach.id);
+                    const currentValue = progress[ach.id] || 0;
+                    const pct = Math.min(100, (currentValue / ach.target) * 100);
+
+                    return (
+                      <div key={ach.id} style={{
+                        display: "flex", alignItems: "center", gap: 12,
+                        padding: "10px 12px", borderRadius: 10, marginBottom: 5,
+                        background: isUnlocked ? `${catColor}08` : "rgba(255,255,255,0.015)",
+                        border: `1px solid ${isUnlocked ? `${catColor}20` : "rgba(255,255,255,0.04)"}`,
+                        opacity: isUnlocked ? 1 : 0.6,
                       }}>
-                        {isUnlocked
-                          ? <ach.Icon size={16} color="#ffaa00" />
-                          : <Lock size={14} color="rgba(255,255,255,0.2)" />
-                        }
-                      </div>
-
-                      <div style={{ flex: 1 }}>
-                        <span style={{
-                          fontSize: 11, fontWeight: 700, letterSpacing: 1,
-                          color: isUnlocked ? "#fff" : "rgba(255,255,255,0.4)",
-                          display: "block", marginBottom: 4,
+                        <div style={{
+                          width: 34, height: 34, borderRadius: 8,
+                          background: isUnlocked ? `${catColor}15` : "rgba(255,255,255,0.03)",
+                          border: `1px solid ${isUnlocked ? `${catColor}30` : "rgba(255,255,255,0.05)"}`,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          flexShrink: 0, fontSize: 16,
                         }}>
-                          {ach.name}
-                        </span>
-                        <span style={{
-                          fontSize: 9, color: "rgba(255,255,255,0.25)", display: "block", marginBottom: 6,
-                        }}>
-                          {ach.desc}
-                        </span>
-                        {!isUnlocked && (
-                          <div style={{ height: 3, borderRadius: 1.5, background: "rgba(255,255,255,0.05)", overflow: "hidden" }}>
-                            <div style={{
-                              height: "100%", borderRadius: 1.5,
-                              width: `${pct}%`,
-                              background: "rgba(255,170,0,0.3)",
-                            }} />
-                          </div>
-                        )}
-                      </div>
+                          {isUnlocked ? "🏆" : <Lock size={13} color="rgba(255,255,255,0.2)" />}
+                        </div>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
-                        {isUnlocked
-                          ? <Check size={14} color="#00dd78" />
-                          : <>
-                              <Gem size={11} color="rgba(255,170,0,0.4)" />
-                              <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,170,0,0.4)" }}>{ach.reward}</span>
-                            </>
-                        }
+                        <div style={{ flex: 1 }}>
+                          <span style={{
+                            fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                            color: isUnlocked ? "#fff" : "rgba(255,255,255,0.4)",
+                            display: "block", marginBottom: 2,
+                          }}>
+                            {ach.name}
+                          </span>
+                          <span style={{
+                            fontSize: 9, color: "rgba(255,255,255,0.25)", display: "block", marginBottom: 4,
+                          }}>
+                            {ach.desc}
+                          </span>
+                          {!isUnlocked && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ flex: 1, height: 3, borderRadius: 1.5, background: "rgba(255,255,255,0.05)", overflow: "hidden" }}>
+                                <div style={{
+                                  height: "100%", borderRadius: 1.5,
+                                  width: `${pct}%`,
+                                  background: `${catColor}50`,
+                                }} />
+                              </div>
+                              <span style={{ fontSize: 8, color: "rgba(255,255,255,0.2)", flexShrink: 0 }}>
+                                {fmtAchNum(currentValue)}/{fmtAchNum(ach.target)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
+                          {isUnlocked
+                            ? <Check size={14} color="#00dd78" />
+                            : <>
+                                <Gem size={9} color={`${catColor}66`} />
+                                <span style={{ fontSize: 10, fontWeight: 600, color: `${catColor}66` }}>{ach.reward >= 1000 ? `${(ach.reward/1000).toFixed(0)}K` : ach.reward}</span>
+                              </>
+                          }
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             );
           })()}
           {sheet === "settings" && (
             <>
-              <SettingRow icon={<Volume2 size={18} />} label="Sound Effects" value={playerData.soundEnabled} onChange={(v) => { setSoundEnabled(v); onDataChange(updateSettings("soundEnabled", v)); if (v) playClick(); }} accent={skin.accent} />
-              <SettingRow icon={<Music size={18} />} label="Music" value={playerData.musicEnabled} onChange={(v) => { setMusicEnabled(v); if (v) startAmbient(); else stopAmbient(); onDataChange(updateSettings("musicEnabled", v)); }} accent={skin.accent} />
+              <VolumeSlider
+                icon={<Volume2 size={18} />}
+                label="Sound Effects"
+                value={playerData.soundVolume ?? 70}
+                onChange={(v) => {
+                  setSoundVolume(v);
+                  const d = updateSettings("soundVolume", v);
+                  onDataChange(updateSettings("soundEnabled", v > 0));
+                  if (v > 0) playClick();
+                }}
+                accent={skin.accent}
+              />
+              <VolumeSlider
+                icon={<Music size={18} />}
+                label="Music"
+                value={playerData.musicVolume ?? 50}
+                onChange={(v) => {
+                  setMusicVolume(v);
+                  if (v > 0) startAmbient(); else stopAmbient();
+                  const d = updateSettings("musicVolume", v);
+                  onDataChange(updateSettings("musicEnabled", v > 0));
+                }}
+                accent={skin.accent}
+              />
               <SettingRow icon={<Smartphone size={18} />} label="Vibration" value={playerData.vibrationEnabled} onChange={(v) => onDataChange(updateSettings("vibrationEnabled", v))} accent={skin.accent} />
               <div style={z.setRow}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

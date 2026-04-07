@@ -2,6 +2,7 @@ export const BOSSES = [
   {
     id: "solar_sentinel",
     name: "SOLAR SENTINEL",
+    subtitle: "Watcher of Mercury",
     planet: "Mercury",
     triggerDistance: 58_000_000,
     hp: 300,
@@ -15,6 +16,7 @@ export const BOSSES = [
   {
     id: "acid_wraith",
     name: "ACID WRAITH",
+    subtitle: "Venom of Venus",
     planet: "Venus",
     triggerDistance: 108_000_000,
     hp: 500,
@@ -28,6 +30,7 @@ export const BOSSES = [
   {
     id: "orbital_fortress",
     name: "ORBITAL FORTRESS",
+    subtitle: "Earth's Bane",
     planet: "Earth",
     triggerDistance: 150_000_000,
     hp: 800,
@@ -41,6 +44,7 @@ export const BOSSES = [
   {
     id: "iron_colossus",
     name: "IRON COLOSSUS",
+    subtitle: "Warlord of Mars",
     planet: "Mars",
     triggerDistance: 228_000_000,
     hp: 1200,
@@ -54,6 +58,7 @@ export const BOSSES = [
   {
     id: "storm_titan",
     name: "STORM TITAN",
+    subtitle: "Lord of Jupiter",
     planet: "Jupiter",
     triggerDistance: 778_000_000,
     hp: 1500,
@@ -67,6 +72,7 @@ export const BOSSES = [
   {
     id: "ring_weaver",
     name: "RING WEAVER",
+    subtitle: "Saturn's Shadow",
     planet: "Saturn",
     triggerDistance: 1_400_000_000,
     hp: 1800,
@@ -80,6 +86,7 @@ export const BOSSES = [
   {
     id: "cryo_phantom",
     name: "CRYO PHANTOM",
+    subtitle: "Specter of Uranus",
     planet: "Uranus",
     triggerDistance: 2_900_000_000,
     hp: 2000,
@@ -93,6 +100,7 @@ export const BOSSES = [
   {
     id: "void_leviathan",
     name: "VOID LEVIATHAN",
+    subtitle: "Neptune's Wrath",
     planet: "Neptune",
     triggerDistance: 4_500_000_000,
     hp: 3000,

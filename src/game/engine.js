@@ -13,7 +13,8 @@ import { drawEnemies, drawEnemyProjectiles } from "./enemyRenderer.js";
 import { spawnComboText, updateComboEffects, renderComboEffects, clearComboTexts } from "./comboEffects.js";
 import { renderZoneBackground, getCurrentZoneName } from "./zoneRenderer.js";
 import { getCurrentZoneWaves } from "./zoneWaves.js";
-import { getActiveBuffs } from "../data/playerData.js";
+import { getActiveBuffs, getPermanentBonuses } from "../data/playerData.js";
+import { BOSS_CRYSTAL_DROPS, PREMIUM_ITEMS } from "../data/premiumShop.js";
 import { formatDistance } from "../utils/formatDistance.js";
 import { getWeapon } from "../data/weapons.js";
 import { onLightningHit } from "./lightningChain.js";
@@ -37,6 +38,25 @@ export function computeDeltaTime() {
 
 export function getDeltaTime() { return deltaTime; }
 export function resetDeltaTime() { lastFrameTime = performance.now(); deltaTime = 1; }
+
+// ── Premium Passive State ──
+let premiumPassiveCache = null;
+let premiumPassiveSkinId = null;
+let premiumRegenTimer = 0;
+let premiumPhoenixUsed = false;
+
+export function getPremiumPassive(skinId) {
+  if (skinId === premiumPassiveSkinId) return premiumPassiveCache;
+  premiumPassiveSkinId = skinId;
+  const item = PREMIUM_ITEMS.find(p => p.id === skinId && p.type === "skin");
+  premiumPassiveCache = item?.passive || null;
+  return premiumPassiveCache;
+}
+
+export function resetPremiumPassiveState() {
+  premiumRegenTimer = 0;
+  premiumPhoenixUsed = false;
+}
 
 // ── Particle Pool ──
 const PARTICLE_POOL_SIZE = 400;
@@ -441,6 +461,105 @@ function drawCoinCounter(ctx, state) {
   ctx.fillText(formatCoins(state.hudCoinDisplay), x + 12, y + 5);
 }
 
+function drawCrystalCounter(ctx, state) {
+  if (state.crystalsEarnedThisRun <= 0) return;
+  const x = 55;
+  const y = 48;
+
+  // Crystal icon (diamond shape)
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.shadowColor = "#dd66ff";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = "#dd66ff";
+  ctx.beginPath();
+  ctx.moveTo(0, -6);
+  ctx.lineTo(5, 0);
+  ctx.lineTo(0, 6);
+  ctx.lineTo(-5, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ee88ff";
+  ctx.beginPath();
+  ctx.moveTo(0, -3);
+  ctx.lineTo(2.5, 0);
+  ctx.lineTo(0, 3);
+  ctx.lineTo(-2.5, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  // Number
+  ctx.font = "700 14px 'Sora', sans-serif";
+  ctx.fillStyle = "#ee88ff";
+  ctx.textAlign = "left";
+  ctx.fillText(state.crystalsEarnedThisRun.toString(), x + 12, y + 5);
+}
+
+function drawCrystalPopup(ctx, state) {
+  if (!state.crystalPopup || state.crystalPopup.timer <= 0) return;
+
+  const t = state.crystalPopup.timer / state.crystalPopup.maxTimer;
+  const alpha = t < 0.15 ? t / 0.15 : (t > 0.75 ? (1 - t) / 0.25 : 1);
+  const scale = 1 + (1 - t) * 0.3;
+  const yOffset = (1 - t) * -20;
+  const cx = CANVAS_W / 2;
+  const cy = CANVAS_H / 2;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Glow background
+  ctx.fillStyle = "#dd66ff";
+  ctx.globalAlpha = alpha * 0.15;
+  ctx.beginPath();
+  ctx.arc(cx, cy + yOffset, 70, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Large crystal icon
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "#dd66ff";
+  ctx.shadowBlur = 25;
+  ctx.fillStyle = "#dd66ff";
+  ctx.save();
+  ctx.translate(cx, cy - 18 + yOffset);
+  ctx.scale(scale, scale);
+  ctx.beginPath();
+  ctx.moveTo(0, -18);
+  ctx.lineTo(13, 0);
+  ctx.lineTo(0, 18);
+  ctx.lineTo(-13, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ee88ff";
+  ctx.beginPath();
+  ctx.moveTo(0, -9);
+  ctx.lineTo(7, 0);
+  ctx.lineTo(0, 9);
+  ctx.lineTo(-7, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  ctx.shadowBlur = 0;
+
+  // Amount text
+  ctx.font = "900 26px 'Sora', sans-serif";
+  ctx.fillStyle = "#ee88ff";
+  ctx.shadowColor = "#dd66ff";
+  ctx.shadowBlur = 15;
+  ctx.textAlign = "center";
+  ctx.fillText(`+${state.crystalPopup.amount}`, cx, cy + 22 + yOffset);
+
+  // Label
+  ctx.font = "700 10px 'Sora', sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.shadowBlur = 5;
+  ctx.fillText("CRYSTAL EARNED", cx, cy + 40 + yOffset);
+
+  ctx.restore();
+}
+
 function getDifficultyTier(distance) {
   // Returns multipliers based on planet zone — spawn values lower = faster spawning
   if (distance < 30_000_000)        return { hp: 1.0,  speed: 1.0,  spawn: 0.70 };  // Inner system
@@ -477,6 +596,7 @@ function generateMeteorShape(radius) {
 
 export function createGameState() {
   resetParticlePool();
+  resetPremiumPassiveState();
   const stars = Array.from({ length: 120 }, () => ({
     x: Math.random() * CANVAS_W,
     y: Math.random() * CANVAS_H,
@@ -567,6 +687,11 @@ export function createGameState() {
     meteorSpawningEnabled: true,
     // Station buffs (loaded once at game start)
     stationBuffs: getActiveBuffs(),
+    // Premium permanent bonuses
+    permanentBonuses: getPermanentBonuses(),
+    // Crystal tracking
+    crystalsEarnedThisRun: 0,
+    crystalPopup: null,
     // Wave events
     activeWaveEvent: null,
     waveEventTimer: 0,
@@ -603,9 +728,16 @@ export function createGameState() {
     zoneNotificationTimer: 0,
     zoneNameNotification: null, // object: {name, timer, color} for center popup
     // Sound event flags (consumed each frame by GameScreen)
-    sfx: { shoot: false, explosionSmall: false, explosionLarge: false, powerup: false, playerHit: false, combo: false, comboBreak: false, waveStart: false, milestone: false, gameOver: false, bossWarning: false, bossShoot: false, bossHit: false, bossExplosionSmall: false, bossExplosionLarge: false, bossDefeated: false, eventWarning: false, eventComplete: false, lowHp: false, ability: false, coinPickup: false, comboTier: false, abilityReady: false, encounterStart: false, encounterSuccess: false, encounterDanger: false },
+    sfx: { shoot: false, explosionSmall: false, explosionLarge: false, powerup: false, playerHit: false, combo: false, comboBreak: false, waveStart: false, milestone: false, gameOver: false, bossWarning: false, bossShoot: false, bossHit: false, bossExplosionSmall: false, bossExplosionLarge: false, bossDefeated: false, eventWarning: false, eventComplete: false, lowHp: false, ability: false, coinPickup: false, comboTier: false, abilityReady: false, encounterStart: false, encounterSuccess: false, encounterDanger: false, crystalEarn: false },
     lastLives: 3,
   };
+
+  // Apply permanent bonuses at game start
+  const permBonuses = state.permanentBonuses;
+  if (permBonuses.maxHp) {
+    state.lives = Math.min(MAX_LIVES, state.lives + permBonuses.maxHp);
+    state.lastLives = state.lives;
+  }
 
   // Apply station buffs at game start
   const buffs = state.stationBuffs;
@@ -739,8 +871,10 @@ function spawnEventEnemy(state, type, opts = {}) {
     enemy.targetX = enemy.x;
   }
   if (type === "kamikaze") {
-    enemy.lockedOnPlayer = false;
-    enemy.chargeAngle = 0;
+    enemy.locked = false;
+    enemy.vx = 0;
+    enemy.vy = 0;
+    enemy.pulseTimer = 0;
   }
   state.enemies.push(enemy);
 }
@@ -773,8 +907,13 @@ export function handleEncounterChoice(state, choiceIndex) {
     if (!choice.condition(checkData)) return;
   }
 
-  // Execute outcome
+  // Execute outcome — track coin spend to update HUD
+  const coinsBefore = state.actualCoinsThisRun;
   const result = choice.outcome(state);
+  const coinsSpent = coinsBefore - state.actualCoinsThisRun;
+  if (coinsSpent > 0) {
+    state.hudCoinDisplay = Math.max(0, state.hudCoinDisplay - coinsSpent);
+  }
 
   // Resume game from encounter pause
   state.encounterPaused = false;
@@ -1388,6 +1527,66 @@ function executeForceBlast(state) {
   state.sfx.explosionLarge = true;
 }
 
+// ── Premium Passive: Damage Wrapper ──
+// Returns true if the player actually died (gameOver), false otherwise.
+// Call this instead of direct `state.lives--` + gameOver check.
+export function applyPlayerDamage(state, sfx) {
+  const passive = getPremiumPassive(state._premiumSkinId);
+
+  // Dodge check (Omega)
+  if (passive?.type === "dodge" && Math.random() < passive.value) {
+    // Dodged! Show visual feedback
+    state.damagePopups = state.damagePopups || [];
+    state.damagePopups.push({
+      x: state.player.x,
+      y: state.player.y - 30,
+      text: "DODGE",
+      color: "#ff00ff",
+      timer: 60,
+    });
+    spawnParticles(state, state.player.x, state.player.y, 8, "#ff00ff", 2);
+    return false;
+  }
+
+  state.lives--;
+  state.invincibleTimer = INVINCIBLE_FRAMES;
+  state.shakeTimer = 10;
+  state.wasHitThisWave = true;
+  sfx.playerHit = true;
+  spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
+  if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(50);
+
+  if (state.lives <= 0) {
+    // Phoenix revive check
+    if (passive?.type === "revive" && !premiumPhoenixUsed) {
+      premiumPhoenixUsed = true;
+      state.lives = 2;
+      state.invincibleTimer = INVINCIBLE_FRAMES * 2;
+      // Phoenix rebirth visual
+      state.killFlashTimer = 60;
+      state.killFlashColor = "#ff8800";
+      for (let i = 0; i < 50; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        spawnParticles(state, state.player.x, state.player.y, 1, "#ffaa00", 4);
+      }
+      state.damagePopups = state.damagePopups || [];
+      state.damagePopups.push({
+        x: state.player.x,
+        y: state.player.y - 40,
+        text: "REBORN",
+        color: "#ffaa00",
+        timer: 180,
+        big: true,
+      });
+      return false;
+    }
+    state.gameOver = true;
+    sfx.gameOver = true;
+    return true;
+  }
+  return false;
+}
+
 export function updateGame(state) {
   if (state.gameOver) return;
   state.frame++;
@@ -1403,6 +1602,7 @@ export function updateGame(state) {
   sfx.eventWarning = false; sfx.eventComplete = false; sfx.lowHp = false; sfx.ability = false; sfx.coinPickup = false;
   sfx.comboBreak = false; sfx.achievement = false; sfx.comboTier = false; sfx.abilityReady = false;
   sfx.encounterStart = false; sfx.encounterSuccess = false; sfx.encounterDanger = false;
+  sfx.crystalEarn = false;
 
   // Compute delta time
   const dt = computeDeltaTime();
@@ -1427,8 +1627,8 @@ export function updateGame(state) {
     ? (1 + state.pilotBonus.value) : 1;
   const distMultiplier = (state.activeEffects.doublepts > 0 ? 2 : 1) * pilotCoinMult;
 
-  // Distance accumulation (paused during boss fight)
-  if (!state.bossActive) {
+  // Distance accumulation (paused during boss fight and encounters)
+  if (!state.bossActive && !state.encounterPaused) {
     state.distance += BASE_DISTANCE_PER_FRAME * dt * distMultiplier * worldSpeed;
   }
 
@@ -1660,18 +1860,7 @@ export function updateGame(state) {
         result.iceHitPlayer, result.tentacleHitPlayer, result.miniCreatureHitPlayer,
       ];
       if (hitFlags.some(Boolean) && state.invincibleTimer <= 0 && state.activeEffects.shield <= 0) {
-        state.lives--;
-        state.invincibleTimer = INVINCIBLE_FRAMES;
-        state.shakeTimer = 10;
-        state.wasHitThisWave = true;
-        sfx.playerHit = true;
-        spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
-        if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(50);
-        if (state.lives <= 0) {
-          state.gameOver = true;
-          sfx.gameOver = true;
-          return;
-        }
+        if (applyPlayerDamage(state, sfx)) return;
       }
 
       // Boss projectiles update & player collision
@@ -1702,18 +1891,8 @@ export function updateGame(state) {
         const dx = p.x - state.player.x;
         const dy = p.y - state.player.y;
         if (Math.sqrt(dx * dx + dy * dy) < 18 && state.invincibleTimer <= 0 && state.activeEffects.shield <= 0) {
-          state.lives--;
-          state.invincibleTimer = INVINCIBLE_FRAMES;
-          state.shakeTimer = 10;
-          sfx.playerHit = true;
-          if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(80);
-          spawnParticles(state, state.player.x, state.player.y, 20, "#ff0044", 4);
           state.bossProjectiles.splice(pi, 1);
-          if (state.lives <= 0) {
-            state.gameOver = true;
-            sfx.gameOver = true;
-            return;
-          }
+          if (applyPlayerDamage(state, sfx)) return;
         }
       }
 
@@ -1812,6 +1991,12 @@ export function updateGame(state) {
         state.bossCoinsEarned += state.bossActive.reward;
         state.bossDefeatTextTimer = 120; // "BOSS DEFEATED" text for 2 sec
 
+        // Crystal drop from boss
+        const bossCrystals = BOSS_CRYSTAL_DROPS[state.bossActive.id] || 1;
+        state.crystalsEarnedThisRun += bossCrystals;
+        state.crystalPopup = { amount: bossCrystals, timer: 180, maxTimer: 180 };
+        sfx.crystalEarn = true;
+
         // Queue boss achievement check for GameScreen to process
         state.achievementQueue.push({ type: "boss", bossId: state.bossActive.id, totalDefeated: state.bossDefeatedList.length });
 
@@ -1874,7 +2059,7 @@ export function updateGame(state) {
     sfx.shoot = true;
     const px = state.player.x;
     const py = state.player.y - state.player.h;
-    const stationDmgMult = 1 + (state.stationBuffs?.damage_mult || 0);
+    const stationDmgMult = 1 + (state.stationBuffs?.damage_mult || 0) + (state.permanentBonuses?.damage || 0);
     const encounterDmgMult = state._encounterDamageMult || 1;
     const adjustedDmg = wStats.dmg * pilotDmgMult * stationDmgMult * encounterDmgMult;
     const bulletBase = { size: wStats.size, dmg: adjustedDmg, weaponId: state.weaponId };
@@ -2017,6 +2202,14 @@ export function updateGame(state) {
       state.eventCoinsEarned += bonusCoins;
       state.actualCoinsThisRun += bonusCoins;
       state.totalWaveEventsCompleted++;
+
+      // 25% chance for crystal on wave event completion
+      if (Math.random() < 0.25) {
+        state.crystalsEarnedThisRun += 1;
+        state.crystalPopup = { amount: 1, timer: 180, maxTimer: 180 };
+        sfx.crystalEarn = true;
+      }
+
       state.rewardPopup = { text: `+${bonusCoins} COINS`, color: "#ffaa00", timer: 120, maxTimer: 120 };
       // Spawn coin pop from center of screen
       spawnCoinPop(state, CANVAS_W / 2, CANVAS_H / 2, bonusCoins);
@@ -2029,6 +2222,11 @@ export function updateGame(state) {
   // Reward popup decay
   if (state.rewardPopup && state.rewardPopup.timer > 0) {
     state.rewardPopup.timer -= dt;
+  }
+
+  // Crystal popup decay
+  if (state.crystalPopup && state.crystalPopup.timer > 0) {
+    state.crystalPopup.timer -= dt;
   }
 
   // ─── NPC ENCOUNTER SYSTEM ───
@@ -2179,6 +2377,17 @@ export function updateGame(state) {
         m.hp -= (b.dmg || 1);
         spawnParticles(state, b.x, b.y, 3, `hsl(${m.hue},60%,60%)`, 1.5);
 
+        // Dragon burn passive
+        const burnPassive = getPremiumPassive(state._premiumSkinId);
+        if (burnPassive?.type === "burn" && !m.burning) {
+          m.burning = {
+            dmg: burnPassive.value.dmg,
+            duration: burnPassive.value.duration,
+            tickInterval: burnPassive.value.tickInterval,
+            lastTick: 0,
+          };
+        }
+
         // Lightning chain
         if (b.type === "lightning" && b.chains > 0) {
           onLightningHit(state, b, m);
@@ -2204,6 +2413,13 @@ export function updateGame(state) {
 
           // Combo via centralized onKill (with coin value for pop animation)
           onKill(state, m.x, m.y, m.golden ? "#ffcc44" : `hsl(${m.hue},70%,55%)`, m.bonusDistance * rewardMult, sfx, meteorCoins);
+
+          // Rare crystal drop (1% chance)
+          if (Math.random() < 0.01) {
+            state.crystalsEarnedThisRun += 1;
+            state.crystalPopup = { amount: 1, timer: 180, maxTimer: 180 };
+            sfx.crystalEarn = true;
+          }
 
           // Powerup drop (doubled by karma buff)
           const dropChance = 0.15 * (state._encounterPowerupMult || 1);
@@ -2231,22 +2447,8 @@ export function updateGame(state) {
       const dy = state.player.y - m.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < m.radius + state.player.w * 0.6) {
-        state.lives--;
-        state.invincibleTimer = INVINCIBLE_FRAMES;
-        state.shakeTimer = 10;
-        state.wasHitThisWave = true;
-        sfx.playerHit = true;
-        spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
-        if (state.vibrationEnabled && navigator.vibrate) {
-          navigator.vibrate(50);
-        }
         state.meteors.splice(mi, 1);
-
-        if (state.lives <= 0) {
-          state.gameOver = true;
-          sfx.gameOver = true;
-          return;
-        }
+        if (applyPlayerDamage(state, sfx)) return;
         break;
       }
     }
@@ -2277,6 +2479,86 @@ export function updateGame(state) {
   // Drone companions
   if (state.drones.length > 0) {
     updateDrones(state, dt);
+  }
+
+  // ── Premium Passive Updates ──
+  const premPassive = getPremiumPassive(state._premiumSkinId);
+
+  // Regen (Seraph): heal 1 HP every 30 seconds
+  if (premPassive?.type === "regen") {
+    premiumRegenTimer += dt * 16.667;
+    if (premiumRegenTimer >= premPassive.value.interval) {
+      premiumRegenTimer = 0;
+      if (state.lives < MAX_LIVES) {
+        state.lives += premPassive.value.hp;
+        if (state.lives > MAX_LIVES) state.lives = MAX_LIVES;
+        spawnParticles(state, state.player.x, state.player.y, 6, "#ffdd44", 2);
+        state.damagePopups = state.damagePopups || [];
+        state.damagePopups.push({
+          x: state.player.x,
+          y: state.player.y - 25,
+          text: "+1 HP",
+          color: "#ffdd00",
+          timer: 60,
+        });
+      }
+    }
+  }
+
+  // Burn DOT (Dragon): tick damage on burning targets
+  if (premPassive?.type === "burn") {
+    // Process burning meteors
+    for (let mi = state.meteors.length - 1; mi >= 0; mi--) {
+      const m = state.meteors[mi];
+      if (!m.burning) continue;
+      m.burning.duration -= dt * 16.667;
+      m.burning.lastTick += dt * 16.667;
+      if (m.burning.lastTick >= m.burning.tickInterval) {
+        m.burning.lastTick = 0;
+        m.hp -= m.burning.dmg;
+        spawnParticles(state, m.x, m.y, 2, "#ff6600", 1.5);
+        if (m.hp <= 0) {
+          if (m.radius > 20) sfx.explosionLarge = true;
+          else sfx.explosionSmall = true;
+          onKill(state, m.x, m.y, `hsl(${m.hue},70%,55%)`, m.bonusDistance, sfx, 1);
+          state.meteors.splice(mi, 1);
+          continue;
+        }
+      }
+      if (m.burning.duration <= 0) m.burning = null;
+    }
+    // Process burning enemies
+    for (let ei = state.enemies.length - 1; ei >= 0; ei--) {
+      const e = state.enemies[ei];
+      if (!e.burning) continue;
+      e.burning.duration -= dt * 16.667;
+      e.burning.lastTick += dt * 16.667;
+      if (e.burning.lastTick >= e.burning.tickInterval) {
+        e.burning.lastTick = 0;
+        e.hp -= e.burning.dmg;
+        spawnParticles(state, e.x, e.y, 2, "#ff6600", 1.5);
+        if (e.hp <= 0) {
+          spawnParticles(state, e.x, e.y, 15, e.accent, 2.5);
+          if (e.hitRadius > 20) sfx.explosionLarge = true;
+          else sfx.explosionSmall = true;
+          onKill(state, e.x, e.y, e.accent, e.distBonus, sfx, e.coins || 1);
+          state.enemies.splice(ei, 1);
+          continue;
+        }
+      }
+      if (e.burning.duration <= 0) e.burning = null;
+    }
+  }
+
+  // Update damage popups (dodge/reborn/regen text)
+  if (state.damagePopups) {
+    for (let i = state.damagePopups.length - 1; i >= 0; i--) {
+      state.damagePopups[i].timer -= dt;
+      state.damagePopups[i].y -= 0.5 * dt;
+      if (state.damagePopups[i].timer <= 0) {
+        state.damagePopups.splice(i, 1);
+      }
+    }
   }
 
   // Powerup collection
@@ -3374,6 +3656,624 @@ function drawGuardian(ctx, state, skin) {
   ctx.beginPath(); ctx.arc(sx(140), sy(20), 2*S, 0, Math.PI*2); ctx.fill();
 }
 
+// === PREMIUM SHIP CANVAS RENDERERS (Large Detailed Versions) ===
+
+// === PREMIUM SHIP 1: OMEGA — Void Warship ===
+function drawOmegaPremium(ctx) {
+  const t = Date.now();
+  const pulse = 1 + Math.sin(t * 0.005) * 0.15;
+  const ringRot = t * 0.002;
+
+  // Outer rotating energy rings
+  ctx.save();
+  ctx.rotate(ringRot);
+  ctx.strokeStyle = "#ff00ff";
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 28, 7, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.rotate(-ringRot * 1.3);
+  ctx.strokeStyle = "#ff00ff";
+  ctx.globalAlpha = 0.4;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 28, 7, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  // Wing extensions
+  ctx.fillStyle = "#1a0028";
+  ctx.strokeStyle = "#ff00ff";
+  ctx.lineWidth = 1.5;
+
+  // Left wing
+  ctx.beginPath();
+  ctx.moveTo(-26, 3);
+  ctx.lineTo(-13, -8);
+  ctx.lineTo(-10, 3);
+  ctx.lineTo(-13, 11);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Right wing
+  ctx.beginPath();
+  ctx.moveTo(26, 3);
+  ctx.lineTo(13, -8);
+  ctx.lineTo(10, 3);
+  ctx.lineTo(13, 11);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Wing tip cannons
+  ctx.fillStyle = "#aa00ff";
+  ctx.fillRect(-28, -1, 4, 8);
+  ctx.fillRect(24, -1, 4, 8);
+
+  // Cannon glow
+  ctx.shadowColor = "#ff66ff";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = "#ff66ff";
+  ctx.beginPath();
+  ctx.arc(-26, 7, 1.5, 0, Math.PI * 2);
+  ctx.arc(26, 7, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Main hull (arrowhead)
+  ctx.fillStyle = "#0a0014";
+  ctx.strokeStyle = "#ff00ff";
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = "#ff00ff";
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.lineTo(13, -8);
+  ctx.lineTo(15, 8);
+  ctx.lineTo(10, 18);
+  ctx.lineTo(-10, 18);
+  ctx.lineTo(-15, 8);
+  ctx.lineTo(-13, -8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Glowing veins
+  ctx.strokeStyle = "#ff44ff";
+  ctx.lineWidth = 1;
+  ctx.shadowColor = "#ff44ff";
+  ctx.shadowBlur = 4;
+
+  // Center vein
+  ctx.beginPath();
+  ctx.moveTo(0, -20);
+  ctx.lineTo(0, 16);
+  ctx.stroke();
+
+  // Side veins
+  ctx.beginPath();
+  ctx.moveTo(-10, -5);
+  ctx.lineTo(-2, 0);
+  ctx.moveTo(10, -5);
+  ctx.lineTo(2, 0);
+  ctx.moveTo(-8, 12);
+  ctx.lineTo(0, 6);
+  ctx.moveTo(8, 12);
+  ctx.lineTo(0, 6);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Pulsing core (3 layers)
+  ctx.shadowColor = "#ff44ff";
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = "#ff66ff";
+  ctx.beginPath();
+  ctx.arc(0, 0, 4 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffaaff";
+  ctx.beginPath();
+  ctx.arc(0, 0, 2.5 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(0, 0, 1.2 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Engine trails
+  ctx.fillStyle = "#ff00ff";
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(-7, 18);
+  ctx.lineTo(-4, 28);
+  ctx.lineTo(-1, 18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(7, 18);
+  ctx.lineTo(4, 28);
+  ctx.lineTo(1, 18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+// === PREMIUM SHIP 2: SERAPH — Divine Guardian ===
+function drawSeraphPremium(ctx) {
+  const t = Date.now();
+  const haloRot = t * 0.003;
+  const wingFlap = Math.sin(t * 0.004) * 2;
+
+  // Halo (rotating gold ring above ship)
+  ctx.save();
+  ctx.translate(0, -18);
+  ctx.rotate(haloRot);
+  ctx.strokeStyle = "#ffdd00";
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "#ffdd00";
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 14, 3, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 14, 3, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.shadowBlur = 0;
+
+  // Wings (large feathered)
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#ffdd00";
+  ctx.lineWidth = 1;
+  ctx.shadowColor = "#ffffff";
+  ctx.shadowBlur = 8;
+
+  // Left wing
+  ctx.beginPath();
+  ctx.moveTo(-7, -3);
+  ctx.quadraticCurveTo(-30, -15 + wingFlap, -32, 2 + wingFlap);
+  ctx.quadraticCurveTo(-30, 14 + wingFlap, -7, 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Right wing
+  ctx.beginPath();
+  ctx.moveTo(7, -3);
+  ctx.quadraticCurveTo(30, -15 + wingFlap, 32, 2 + wingFlap);
+  ctx.quadraticCurveTo(30, 14 + wingFlap, 7, 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Feather lines (left wing)
+  ctx.strokeStyle = "#ddddee";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-9, -1 + i * 2.5);
+    ctx.lineTo(-28, -10 + i * 4 + wingFlap);
+    ctx.stroke();
+  }
+  // Right wing
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(9, -1 + i * 2.5);
+    ctx.lineTo(28, -10 + i * 4 + wingFlap);
+    ctx.stroke();
+  }
+
+  // Main hull
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#ffdd00";
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = "#ffdd44";
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(0, -18);
+  ctx.lineTo(8, -3);
+  ctx.lineTo(10, 14);
+  ctx.lineTo(6, 22);
+  ctx.lineTo(-6, 22);
+  ctx.lineTo(-10, 14);
+  ctx.lineTo(-8, -3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Gold accents
+  ctx.fillStyle = "#ffdd00";
+  ctx.fillRect(-1, -16, 2, 38);
+  ctx.fillRect(-4, -8, 8, 1.5);
+  ctx.fillRect(-5, 14, 10, 1.5);
+
+  // Cockpit (gold cross)
+  ctx.fillStyle = "#ffaa00";
+  ctx.fillRect(-1, -6, 2, 12);
+  ctx.fillRect(-4, -1, 8, 2);
+
+  // Glowing core
+  ctx.shadowColor = "#ffdd44";
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(0, 6, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffdd00";
+  ctx.beginPath();
+  ctx.arc(0, 6, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Light particles orbiting ship
+  for (let i = 0; i < 4; i++) {
+    const angle = (t * 0.001 + i * Math.PI / 2) % (Math.PI * 2);
+    const r = 18;
+    const px = Math.cos(angle) * r;
+    const py = Math.sin(angle) * r;
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.arc(px, py, 1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// === PREMIUM SHIP 3: DRAGON — Ancient Wyrm ===
+function drawDragonPremium(ctx) {
+  const t = Date.now();
+  const breathPulse = 0.8 + Math.sin(t * 0.008) * 0.3;
+
+  // Folded wings (along sides)
+  ctx.fillStyle = "#3a0808";
+  ctx.strokeStyle = "#ff6600";
+  ctx.lineWidth = 1;
+
+  // Left wing
+  ctx.beginPath();
+  ctx.moveTo(-12, -3);
+  ctx.quadraticCurveTo(-26, -8, -28, 5);
+  ctx.lineTo(-26, 14);
+  ctx.quadraticCurveTo(-18, 10, -14, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Right wing
+  ctx.beginPath();
+  ctx.moveTo(12, -3);
+  ctx.quadraticCurveTo(26, -8, 28, 5);
+  ctx.lineTo(26, 14);
+  ctx.quadraticCurveTo(18, 10, 14, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Wing membrane lines
+  ctx.strokeStyle = "#ff8800";
+  ctx.lineWidth = 0.4;
+  ctx.beginPath();
+  ctx.moveTo(-15, -1); ctx.lineTo(-26, 0);
+  ctx.moveTo(-15, 3); ctx.lineTo(-26, 6);
+  ctx.moveTo(15, -1); ctx.lineTo(26, 0);
+  ctx.moveTo(15, 3); ctx.lineTo(26, 6);
+  ctx.stroke();
+
+  // Body segments (dragon scales)
+  // Top segment
+  ctx.fillStyle = "#cc2200";
+  ctx.strokeStyle = "#ffaa00";
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.ellipse(0, -16, 7, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Upper-mid segment
+  ctx.fillStyle = "#aa1800";
+  ctx.beginPath();
+  ctx.ellipse(0, -5, 9, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Mid (largest) segment
+  ctx.fillStyle = "#881400";
+  ctx.beginPath();
+  ctx.ellipse(0, 8, 10, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Bottom segment
+  ctx.fillStyle = "#aa1800";
+  ctx.beginPath();
+  ctx.ellipse(0, 20, 8, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Spine ridges (dorsal spikes)
+  ctx.fillStyle = "#ffaa00";
+  ctx.strokeStyle = "#ff6600";
+  ctx.lineWidth = 0.5;
+
+  ctx.beginPath();
+  ctx.moveTo(-2, -22); ctx.lineTo(0, -28); ctx.lineTo(2, -22); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(-2, -10); ctx.lineTo(0, -16); ctx.lineTo(2, -10); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(-2, 4); ctx.lineTo(0, -2); ctx.lineTo(2, 4); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(-2, 16); ctx.lineTo(0, 10); ctx.lineTo(2, 16); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // Dragon head (front)
+  ctx.fillStyle = "#660800";
+  ctx.strokeStyle = "#ffaa00";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, -28);
+  ctx.lineTo(-6, -22);
+  ctx.lineTo(-5, -16);
+  ctx.lineTo(5, -16);
+  ctx.lineTo(6, -22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Glowing yellow eyes
+  ctx.shadowColor = "#ffff00";
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = "#ffff00";
+  ctx.beginPath();
+  ctx.arc(-2.5, -20, 1.2, 0, Math.PI * 2);
+  ctx.arc(2.5, -20, 1.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.arc(-2.5, -20, 0.5, 0, Math.PI * 2);
+  ctx.arc(2.5, -20, 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Horns
+  ctx.fillStyle = "#ffaa00";
+  ctx.beginPath();
+  ctx.moveTo(-6, -24); ctx.lineTo(-9, -32); ctx.lineTo(-4, -26); ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(6, -24); ctx.lineTo(9, -32); ctx.lineTo(4, -26); ctx.closePath();
+  ctx.fill();
+
+  // Fire breath (animated, in front of head)
+  ctx.shadowColor = "#ff6600";
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = "#ff8800";
+  ctx.globalAlpha = breathPulse;
+  ctx.beginPath();
+  ctx.arc(0, -32, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffff00";
+  ctx.beginPath();
+  ctx.arc(0, -32, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+
+  // Tail
+  ctx.fillStyle = "#cc2200";
+  ctx.strokeStyle = "#ffaa00";
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(0, 26);
+  ctx.quadraticCurveTo(4, 32, -2, 38);
+  ctx.quadraticCurveTo(-6, 36, -3, 30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Tail tip flame
+  ctx.fillStyle = "#ff6600";
+  ctx.beginPath();
+  ctx.moveTo(-3, 38);
+  ctx.lineTo(-7, 42);
+  ctx.lineTo(-1, 40);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// === PREMIUM SHIP 4: PHOENIX LORD — Reborn Fire ===
+function drawPhoenixPremium(ctx) {
+  const t = Date.now();
+  const flameFlicker = 0.7 + Math.sin(t * 0.012) * 0.2;
+  const wingBeat = Math.sin(t * 0.005) * 1.5;
+
+  // Outer flame aura
+  ctx.shadowColor = "#ff6600";
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = "#ff3300";
+  ctx.globalAlpha = 0.4 * flameFlicker;
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ff6600";
+  ctx.globalAlpha = 0.5 * flameFlicker;
+  ctx.beginPath();
+  ctx.arc(0, 0, 20, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+
+  // Spread bird wings (animated)
+  ctx.fillStyle = "#ffaa00";
+  ctx.strokeStyle = "#ff3300";
+  ctx.lineWidth = 1;
+
+  // Left wing
+  ctx.beginPath();
+  ctx.moveTo(-6, -4);
+  ctx.quadraticCurveTo(-22, -12 + wingBeat, -28, -4 + wingBeat);
+  ctx.quadraticCurveTo(-30, 8 + wingBeat, -22, 12 + wingBeat);
+  ctx.quadraticCurveTo(-15, 10, -8, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Right wing
+  ctx.beginPath();
+  ctx.moveTo(6, -4);
+  ctx.quadraticCurveTo(22, -12 + wingBeat, 28, -4 + wingBeat);
+  ctx.quadraticCurveTo(30, 8 + wingBeat, 22, 12 + wingBeat);
+  ctx.quadraticCurveTo(15, 10, 8, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Wing feather lines
+  ctx.strokeStyle = "#ff6600";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-9, -2 + i * 2.5);
+    ctx.lineTo(-26, -6 + i * 4 + wingBeat);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(9, -2 + i * 2.5);
+    ctx.lineTo(26, -6 + i * 4 + wingBeat);
+    ctx.stroke();
+  }
+
+  // Body (bird shape)
+  ctx.fillStyle = "#ff8800";
+  ctx.strokeStyle = "#ff3300";
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = "#ff6600";
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(0, -16);
+  ctx.lineTo(8, -6);
+  ctx.lineTo(10, 8);
+  ctx.lineTo(6, 18);
+  ctx.lineTo(-6, 18);
+  ctx.lineTo(-10, 8);
+  ctx.lineTo(-8, -6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Phoenix head
+  ctx.fillStyle = "#ffaa00";
+  ctx.strokeStyle = "#ff3300";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, -14, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Crown crest
+  ctx.fillStyle = "#ff6600";
+  ctx.beginPath();
+  ctx.moveTo(0, -19);
+  ctx.lineTo(-2, -23);
+  ctx.lineTo(0, -21);
+  ctx.lineTo(2, -23);
+  ctx.closePath();
+  ctx.fill();
+
+  // Beak
+  ctx.fillStyle = "#ffdd00";
+  ctx.beginPath();
+  ctx.moveTo(-1, -11);
+  ctx.lineTo(-3, -8);
+  ctx.lineTo(1, -9);
+  ctx.closePath();
+  ctx.fill();
+
+  // Glowing eye
+  ctx.shadowColor = "#ffff00";
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = "#ffff00";
+  ctx.beginPath();
+  ctx.arc(0, -14, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.arc(0, -14, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Glowing chest core
+  ctx.shadowColor = "#ffaa00";
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = "#ffff00";
+  ctx.beginPath();
+  ctx.arc(0, 4, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(0, 4, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // 3 trailing tail feathers
+  ctx.fillStyle = "#ff6600";
+  ctx.shadowColor = "#ff8800";
+  ctx.shadowBlur = 8;
+
+  // Left
+  ctx.beginPath();
+  ctx.moveTo(-4, 18);
+  ctx.quadraticCurveTo(-7, 26, -10, 34);
+  ctx.quadraticCurveTo(-6, 28, -3, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  // Center (longest)
+  ctx.fillStyle = "#ffaa00";
+  ctx.beginPath();
+  ctx.moveTo(0, 18);
+  ctx.quadraticCurveTo(-1, 30, 0, 40);
+  ctx.quadraticCurveTo(1, 30, 2, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  // Right
+  ctx.fillStyle = "#ff6600";
+  ctx.beginPath();
+  ctx.moveTo(4, 18);
+  ctx.quadraticCurveTo(7, 26, 10, 34);
+  ctx.quadraticCurveTo(6, 28, 3, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+}
+
 function drawPilotHelmetCanvas(ctx, x, y, pilotId) {
   switch (pilotId) {
     case "rebel":
@@ -3485,6 +4385,21 @@ function getEnginePositions(player, skin) {
       return [
         { x: player.x - 7, y: player.y + 17 },
         { x: player.x + 7, y: player.y + 17 },
+      ];
+    case "omega":
+      return [{ x: player.x, y: player.y + 18 }];
+    case "seraph":
+      return [
+        { x: player.x - 6, y: player.y + 17 },
+        { x: player.x + 6, y: player.y + 17 },
+      ];
+    case "dragon":
+      return [{ x: player.x, y: player.y + 20 }];
+    case "phoenix_lord":
+      return [
+        { x: player.x - 6, y: player.y + 16 },
+        { x: player.x + 6, y: player.y + 16 },
+        { x: player.x, y: player.y + 18 },
       ];
     default:
       return defaultEngines;
@@ -3725,6 +4640,18 @@ function drawShipTrail(ctx, state, skin) {
       case "nebula":
         drawCrystalParticles(ctx, state.player.x, state.player.y + 17, frameCount);
         break;
+      case "omega":
+        drawVoidSingularity(ctx, state.player.x, state.player.y + 18, frameCount);
+        break;
+      case "seraph":
+        drawCrystalParticles(ctx, state.player.x, state.player.y + 17, frameCount);
+        break;
+      case "dragon":
+        drawPhoenixEmbers(ctx, state.player.x, state.player.y + 20, frameCount);
+        break;
+      case "phoenix_lord":
+        drawPhoenixEmbers(ctx, state.player.x, state.player.y + 16, frameCount);
+        break;
     }
   }
 
@@ -3734,8 +4661,15 @@ function drawShipTrail(ctx, state, skin) {
   });
 }
 
+const PREMIUM_SHIP_TYPES = ["omega", "seraph", "dragon", "phoenix_lord"];
+
 function drawPlayerShip(ctx, state, skin) {
   if (skin && skin.customShip) {
+    const isPremium = PREMIUM_SHIP_TYPES.includes(skin.shipType);
+    if (isPremium) {
+      ctx.save();
+      ctx.scale(1.5, 1.5);
+    }
     switch (skin.shipType) {
       case "reaper":   drawReaper(ctx, state, skin); break;
       case "titan":    drawTitan(ctx, state, skin); break;
@@ -3744,7 +4678,14 @@ function drawPlayerShip(ctx, state, skin) {
       case "nebula":   drawNebula(ctx, state, skin); break;
       case "void":     drawVoid(ctx, state, skin); break;
       case "guardian": drawGuardian(ctx, state, skin); break;
+      case "omega":    drawOmegaPremium(ctx); break;
+      case "seraph":   drawSeraphPremium(ctx); break;
+      case "dragon":   drawDragonPremium(ctx); break;
+      case "phoenix_lord": drawPhoenixPremium(ctx); break;
       default:         drawDefaultShip(ctx, state, skin);
+    }
+    if (isPremium) {
+      ctx.restore();
     }
   } else {
     drawDefaultShip(ctx, state, skin);
@@ -4763,6 +5704,37 @@ export function renderGame(ctx, state, skin) {
     drawDrones(ctx, state);
   }
 
+  // Premium passive popups (DODGE, REBORN, +1 HP)
+  if (state.damagePopups) {
+    state.damagePopups.forEach(p => {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.timer / 20);
+      ctx.font = p.big ? "800 16px 'Sora', sans-serif" : "800 11px 'Sora', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillText(p.text, p.x, p.y);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    });
+  }
+
+  // Burn visual on meteors/enemies
+  [...state.meteors, ...state.enemies].forEach(target => {
+    if (!target.burning) return;
+    ctx.save();
+    ctx.globalAlpha = 0.5 + Math.sin(Date.now() * 0.01) * 0.2;
+    ctx.fillStyle = "#ff6600";
+    ctx.shadowColor = "#ff6600";
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(target.x, target.y - 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  });
+
   // Vignette
   const vig = ctx.createRadialGradient(CANVAS_W / 2, CANVAS_H / 2, CANVAS_H * 0.2, CANVAS_W / 2, CANVAS_H / 2, CANVAS_H * 0.65);
   vig.addColorStop(0, "transparent");
@@ -4944,6 +5916,7 @@ export function renderGame(ctx, state, skin) {
 
     // Dramatic Achievement notification
     _drawAchievementNotification(ctx, state);
+    drawCrystalPopup(ctx, state);
 
     // Lives
     ctx.textAlign = "right";
@@ -4960,6 +5933,7 @@ export function renderGame(ctx, state, skin) {
 
   // Coin counter (always visible)
   drawCoinCounter(ctx, state);
+  drawCrystalCounter(ctx, state);
 
   // Combo effects (enhanced visual feedback)
   renderComboEffects(ctx, state);

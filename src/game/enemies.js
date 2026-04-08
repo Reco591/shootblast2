@@ -1,12 +1,12 @@
 import { CANVAS_W, CANVAS_H, POWERUP_TYPES } from "./constants.js";
-import { spawnParticles, onKill } from "./engine.js";
+import { spawnParticles, onKill, applyPlayerDamage, getPremiumPassive } from "./engine.js";
 import { onLightningHit } from "./lightningChain.js";
 import { getCurrentZoneWaves, pickEnemyFromZone } from "./zoneWaves.js";
 
 // ─── ENEMY TYPE DEFINITIONS ───
 const ENEMY_DEFS = {
   viper: {
-    hp: 2, speed: 3, coins: 2, distBonus: 30_000,
+    hp: 2, speed: 3, coins: 1, distBonus: 30_000,
     hitRadius: 22, accent: "#993030", accentLight: "#cc4040",
   },
   gnat: {
@@ -14,56 +14,56 @@ const ENEMY_DEFS = {
     hitRadius: 10, accent: "#00cc88", accentLight: "#00ffaa",
   },
   warper: {
-    hp: 4, speed: 0, coins: 5, distBonus: 80_000,
+    hp: 4, speed: 0, coins: 3, distBonus: 80_000,
     hitRadius: 20, accent: "#40dd20", accentLight: "#80ff60",
   },
   bomber: {
-    hp: 8, speed: 1, coins: 8, distBonus: 120_000,
+    hp: 8, speed: 1, coins: 5, distBonus: 120_000,
     hitRadius: 35, accent: "#446688", accentLight: "#5599dd",
   },
   elite: {
-    hp: 6, speed: 2, coins: 10, distBonus: 150_000,
+    hp: 6, speed: 2, coins: 7, distBonus: 150_000,
     hitRadius: 25, accent: "#7744cc", accentLight: "#bb88ff",
     shield: 4,
   },
   carrier: {
-    hp: 20, speed: 0.5, coins: 25, distBonus: 300_000,
+    hp: 20, speed: 0.5, coins: 14, distBonus: 300_000,
     hitRadius: 60, accent: "#3a4470", accentLight: "#5599dd",
   },
   sniper: {
-    hp: 3, speed: 0, coins: 6, distBonus: 50_000,
+    hp: 3, speed: 0, coins: 4, distBonus: 50_000,
     hitRadius: 18, accent: "#1a5c1a", accentLight: "#33aa33",
   },
   kamikaze: {
-    hp: 2, speed: 6, coins: 5, distBonus: 60_000,
+    hp: 2, speed: 6, coins: 3, distBonus: 60_000,
     hitRadius: 16, accent: "#cc2200", accentLight: "#ff4422",
   },
   tank: {
-    hp: 25, speed: 0.5, coins: 15, distBonus: 100_000,
+    hp: 25, speed: 0.5, coins: 10, distBonus: 100_000,
     hitRadius: 30, accent: "#555544", accentLight: "#887766",
   },
   minelayer: {
-    hp: 5, speed: 1.5, coins: 8, distBonus: 80_000,
+    hp: 5, speed: 1.5, coins: 5, distBonus: 80_000,
     hitRadius: 20, accent: "#227788", accentLight: "#44bbcc",
   },
   splitter: {
-    hp: 4, speed: 2, coins: 10, distBonus: 90_000,
+    hp: 4, speed: 2, coins: 7, distBonus: 90_000,
     hitRadius: 22, accent: "#cc8800", accentLight: "#ffaa00",
   },
   splitter_child: {
-    hp: 2, speed: 3, coins: 2, distBonus: 20_000,
+    hp: 2, speed: 3, coins: 1, distBonus: 20_000,
     hitRadius: 12, accent: "#cc8800", accentLight: "#ffaa00",
   },
   dasher: {
-    hp: 4, speed: 4, coins: 8, distBonus: 75_000,
+    hp: 4, speed: 4, coins: 5, distBonus: 75_000,
     hitRadius: 16, accent: "#00cccc", accentLight: "#00ffff",
   },
   summoner: {
-    hp: 8, speed: 0.8, coins: 12, distBonus: 120_000,
+    hp: 8, speed: 0.8, coins: 8, distBonus: 120_000,
     hitRadius: 24, accent: "#6622aa", accentLight: "#aa44ff",
   },
   phantom: {
-    hp: 6, speed: 2, coins: 15, distBonus: 150_000,
+    hp: 6, speed: 2, coins: 10, distBonus: 150_000,
     hitRadius: 20, accent: "#888899", accentLight: "#ccccdd",
   },
 };
@@ -375,14 +375,7 @@ export function updateEnemies(state, dt = 1, enemySlowFactor = 1) {
           const mdx = state.player.x - e.x;
           const mdy = state.player.y - e.y;
           if (Math.sqrt(mdx * mdx + mdy * mdy) < 40 && state.invincibleTimer <= 0 && state.activeEffects.shield <= 0) {
-            state.lives--;
-            state.invincibleTimer = 120;
-            state.shakeTimer = 10;
-            state.wasHitThisWave = true;
-            state.sfx.playerHit = true;
-            spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
-            if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(80);
-            if (state.lives <= 0) { state.gameOver = true; state.sfx.gameOver = true; }
+            applyPlayerDamage(state, state.sfx);
           }
           state.shakeTimer = Math.max(state.shakeTimer, 5);
           state.enemies.splice(i, 1);
@@ -614,17 +607,20 @@ export function updateEnemies(state, dt = 1, enemySlowFactor = 1) {
 
         e.summonTimer -= dt * enemySlowFactor;
         if (e.summonTimer <= 0 && e.y > 0) {
-          // Spawn 2 gnats near summoner
-          const gnatDef = ENEMY_DEFS.gnat;
-          for (let g = 0; g < 2; g++) {
-            state.enemies.push(createEnemy("gnat", gnatDef, {
-              x: e.x + (g === 0 ? -15 : 15),
-              y: e.y + 10,
-              isLeader: false,
-              summonerSpawned: true,
-            }));
+          // Cap summoned gnats at 6 (same as carrier)
+          const summonedCount = state.enemies.filter(en => en.summonerSpawned).length;
+          if (summonedCount < 6) {
+            const gnatDef = ENEMY_DEFS.gnat;
+            for (let g = 0; g < 2; g++) {
+              state.enemies.push(createEnemy("gnat", gnatDef, {
+                x: e.x + (g === 0 ? -15 : 15),
+                y: e.y + 10,
+                isLeader: false,
+                summonerSpawned: true,
+              }));
+            }
+            spawnParticles(state, e.x, e.y, 8, "#aa44ff", 2);
           }
-          spawnParticles(state, e.x, e.y, 8, "#aa44ff", 2);
           e.summonTimer = 180;
         }
         break;
@@ -718,19 +714,8 @@ export function updateEnemyProjectiles(state, dt = 1, enemySlowFactor = 1) {
     const dx = p.x - state.player.x;
     const dy = p.y - state.player.y;
     if (Math.sqrt(dx * dx + dy * dy) < 18 && state.invincibleTimer <= 0 && state.activeEffects.shield <= 0) {
-      state.lives--;
-      state.invincibleTimer = 120;
-      state.shakeTimer = 10;
-      state.wasHitThisWave = true;
-      state.sfx.playerHit = true;
-      spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
-      if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(80);
       state.enemyProjectiles.splice(i, 1);
-      if (state.lives <= 0) {
-        state.gameOver = true;
-        state.sfx.gameOver = true;
-        return;
-      }
+      if (applyPlayerDamage(state, state.sfx)) return;
     }
   }
 }
@@ -780,6 +765,17 @@ export function checkBulletEnemyCollisions(state) {
 
         e.hp -= dmg;
         spawnParticles(state, b.x, b.y, 3, e.accent, 1.5);
+
+        // Dragon burn passive
+        const burnPassive = getPremiumPassive(state._premiumSkinId);
+        if (burnPassive?.type === "burn" && !e.burning) {
+          e.burning = {
+            dmg: burnPassive.value.dmg,
+            duration: burnPassive.value.duration,
+            tickInterval: burnPassive.value.tickInterval,
+            lastTick: 0,
+          };
+        }
 
         if (e.hp <= 0) {
           destroyEnemy(state, e, ei);
@@ -850,23 +846,11 @@ export function checkPlayerEnemyCollisions(state) {
     const dx = state.player.x - e.x;
     const dy = state.player.y - e.y;
     if (Math.sqrt(dx * dx + dy * dy) < e.hitRadius + state.player.w * 0.6) {
-      state.lives--;
-      state.invincibleTimer = 120;
-      state.shakeTimer = 10;
-      state.wasHitThisWave = true;
-      state.sfx.playerHit = true;
-      spawnParticles(state, state.player.x, state.player.y, 12, "#ff4444", 2);
-      if (state.vibrationEnabled && navigator.vibrate) navigator.vibrate(50);
-
       // Destroy the enemy on contact
       spawnParticles(state, e.x, e.y, 10, e.accent, 2);
       state.enemies.splice(ei, 1);
 
-      if (state.lives <= 0) {
-        state.gameOver = true;
-        state.sfx.gameOver = true;
-        return;
-      }
+      if (applyPlayerDamage(state, state.sfx)) return;
       break;
     }
   }

@@ -17,12 +17,14 @@ import {
   playLowHp, playCoinPickup, playComboBreak, playAchievement,
   playPowerupCollect, playAbilityReady, playComboTier,
   playEncounterStart, playEncounterSuccess, playEncounterDanger,
+  playCrystalEarn, stopAllSounds,
 } from "../audio/soundManager.js";
 import Tutorial from "../components/Tutorial.jsx";
 import PauseOverlay from "../components/PauseOverlay.jsx";
 import EncounterDialog from "../components/EncounterDialog.jsx";
 import { markTutorialSeen, updateAchievementProgress, getPlayerData } from "../data/playerData.js";
 import { ACHIEVEMENTS } from "../data/achievements.js";
+import { showRewardedAd, isAdReady, incrementAdsWatched, getAdsWatchedCount } from "../services/ads.js";
 
 export default function GameScreen({ onGameOver, onBack, playerData, skinId, weaponId = "blaster", weaponLevel = 0, pilotId = "rebel", equippedDrones = [], sensitivity = 1.0, soundEnabled = true, vibrationEnabled = true }) {
   const [showTutorial, setShowTutorial] = useState(playerData && !playerData.tutorialSeen);
@@ -31,6 +33,10 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
   const [godMode, setGodMode] = useState(false);
   const [pauseMode, setPauseMode] = useState(null); // null | "main" | "settings" | "confirm-quit"
   const [encounterUI, setEncounterUI] = useState(null);
+  const [showContinue, setShowContinue] = useState(false);
+  const [continueUsed, setContinueUsed] = useState(false);
+  const [adReady, setAdReady] = useState(false);
+  const pendingGameOverRef = useRef(null);
   const [muted, setMuted] = useState(!soundEnabled);
   const mutedRef = useRef(!soundEnabled);
   const [showFps, setShowFps] = useState(false);
@@ -193,6 +199,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     stateRef.current.weaponLevel = weaponLevel;
     stateRef.current.pilotId = pilotId;
     stateRef.current.pilotBonus = getPilot(pilotId).bonus;
+    stateRef.current._premiumSkinId = skinId;
     stateRef.current.equippedDrones = equippedDrones;
     spawnDrones(stateRef.current);
     // Apply station start_shield buff
@@ -251,7 +258,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
             state.deathScene = null;
             const playTime = Math.floor((performance.now() - startTimeRef.current) / 1000);
             const bossesDefeated = (state.bossDefeatedList || []).length;
-            onGameOver({
+            const gameOverData = {
               distance: state.distance,
               wave: state.wave,
               kills: state.kills,
@@ -267,7 +274,18 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
               nukesUsed: state.nukesUsed || 0,
               abilitiesUsed: state.abilitiesUsed || 0,
               zoneReached: getCurrentZoneName(state.distance),
-            });
+              crystalsEarnedThisRun: state.crystalsEarnedThisRun || 0,
+            };
+            // Offer continue if not already used
+            if (!continueUsed) {
+              pendingGameOverRef.current = gameOverData;
+              state._paused = true;
+              isAdReady().then(ready => setAdReady(ready));
+              setShowContinue(true);
+              rafRef.current = requestAnimationFrame(loop);
+              return;
+            }
+            onGameOver(gameOverData);
             return;
           }
           rafRef.current = requestAnimationFrame(loop);
@@ -283,13 +301,13 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
           if (sfx.shoot) playShoot();
           if (sfx.explosionSmall) playExplosionSmall();
           if (sfx.explosionLarge) playExplosionLarge();
-          if (sfx.powerup) playPowerup();
+          if (sfx.powerup) playPowerupCollect();
           if (sfx.playerHit) playPlayerHit();
           if (sfx.combo) playCombo();
           if (sfx.comboBreak) playComboBreak();
           if (sfx.waveStart) playWaveStart();
           if (sfx.milestone) playMilestone();
-          if (sfx.gameOver) { stopEngine(); playGameOverSound(); }
+          if (sfx.gameOver) { stopAllSounds(); stopEngine(); playGameOverSound(); }
           if (sfx.bossWarning) playBossWarning();
           if (sfx.bossShoot) playBossShoot();
           if (sfx.bossHit) playBossHit();
@@ -300,12 +318,12 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
           if (sfx.achievement) playAchievement();
           if (sfx.ability) playPowerup();
           if (sfx.coinPickup) playCoinPickup();
-          if (sfx.powerup) playPowerupCollect();
           if (sfx.abilityReady) playAbilityReady();
           if (sfx.comboTier) playComboTier();
           if (sfx.encounterStart) playEncounterStart();
           if (sfx.encounterSuccess) playEncounterSuccess();
           if (sfx.encounterDanger) playEncounterDanger();
+          if (sfx.crystalEarn) playCrystalEarn();
         }
 
         // Process achievement queue from engine
@@ -367,6 +385,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     rafRef.current = requestAnimationFrame(loop);
 
     return () => {
+      stopAllSounds();
       stopEngine();
       cancelAnimationFrame(rafRef.current);
       canvas.removeEventListener("touchstart", handleTouch);
@@ -378,7 +397,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
       window.onEncounterDialog = null;
       window.onEncounterEnd = null;
     };
-  }, [gameStarted, godMode, handleTouch, handleTouchEnd, handleMouseDown, handleMouseMove, handleMouseUp, onGameOver]);
+  }, [gameStarted, godMode, continueUsed, handleTouch, handleTouchEnd, handleMouseDown, handleMouseMove, handleMouseUp, onGameOver]);
 
   // Sync pause state with engine
   useEffect(() => {
@@ -389,14 +408,20 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
   useEffect(() => {
     if (!gameStarted) return;
     const onVisChange = () => {
-      if (document.hidden && !pauseMode) setPauseMode("main");
+      if (document.hidden && !pauseMode) {
+        stopAllSounds();
+        setPauseMode("main");
+      }
     };
     document.addEventListener("visibilitychange", onVisChange);
     return () => document.removeEventListener("visibilitychange", onVisChange);
   }, [gameStarted, pauseMode]);
 
   const handlePause = useCallback(() => {
-    setPauseMode(m => m ? null : "main");
+    setPauseMode(m => {
+      if (!m) stopAllSounds(); // kill any stuck sounds on pause
+      return m ? null : "main";
+    });
   }, []);
 
   const handleMuteToggle = useCallback(() => {
@@ -449,7 +474,20 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
           onSettings={() => setPauseMode("settings")}
           onBack={() => setPauseMode("main")}
           onQuit={() => setPauseMode("confirm-quit")}
-          onConfirmQuit={() => { setPauseMode(null); onBack(); }}
+          onConfirmQuit={() => { stopAllSounds(); stopEngine(); setPauseMode(null); onBack(); }}
+          onFreePowerup={() => {
+            const state = stateRef.current;
+            if (state) {
+              const types = ["shield", "rapid", "triple", "magnet"];
+              const type = types[Math.floor(Math.random() * types.length)];
+              state.powerups.push({
+                x: state.player.x, y: state.player.y - 30,
+                type, vx: 0, vy: 0, timer: 0, duration: 300,
+                rotation: 0, rotSpeed: 2, size: 8,
+              });
+            }
+            setPauseMode(null);
+          }}
         />
       )}
       {/* Hidden debug tap zone on wave counter area */}
@@ -500,6 +538,69 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
             }
           }}
         />
+      )}
+      {/* Continue with Ad overlay */}
+      {showContinue && (
+        <div style={styles.continueBackdrop}>
+          <div style={styles.continuePanel}>
+            <h2 style={styles.continueTitle}>CONTINUE?</h2>
+            <p style={styles.continueDesc}>Watch a short ad to revive with 3 HP and keep your run going!</p>
+            {adReady ? (
+              <button
+                onClick={async () => {
+                  console.log("[AD] Triggered: gameover_revive");
+                  setShowContinue(false);
+                  setContinueUsed(true);
+                  const result = await showRewardedAd();
+                  console.log("[AD] Result:", result);
+                  if (result.success) {
+                    incrementAdsWatched();
+                    const count = getAdsWatchedCount();
+                    updateAchievementProgress("ads_first", count);
+                    updateAchievementProgress("ads_10", count);
+                    updateAchievementProgress("ads_50", count);
+                    // Revive player
+                    const state = stateRef.current;
+                    if (state) {
+                      state.lives = 3;
+                      state.gameOver = false;
+                      state.deathScene = null;
+                      state.invincibleTimer = 180; // 3 sec invincibility
+                      state._paused = false;
+                      // Clear nearby hazards so player doesn't die instantly
+                      state.meteors = state.meteors.filter(m => {
+                        const dx = m.x - state.player.x;
+                        const dy = m.y - state.player.y;
+                        return Math.sqrt(dx * dx + dy * dy) > 80;
+                      });
+                      state.bossProjectiles = [];
+                      state.enemyProjectiles = [];
+                      resetDeltaTime();
+                    }
+                  } else {
+                    // Ad failed/skipped, proceed to game over
+                    if (pendingGameOverRef.current) onGameOver(pendingGameOverRef.current);
+                  }
+                }}
+                style={styles.adBtn}
+              >
+                {"\ud83d\udcfa"} WATCH AD TO REVIVE
+              </button>
+            ) : (
+              <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textAlign: "center" }}>Ad not available right now</p>
+            )}
+            <button
+              onClick={() => {
+                setShowContinue(false);
+                setContinueUsed(true);
+                if (pendingGameOverRef.current) onGameOver(pendingGameOverRef.current);
+              }}
+              style={styles.skipBtn}
+            >
+              SKIP
+            </button>
+          </div>
+        </div>
       )}
       {showTutorial && <Tutorial onComplete={handleTutorialComplete} />}
       <style>{`
@@ -636,5 +737,75 @@ const styles = {
     color: "rgba(0,255,100,0.5)",
     letterSpacing: 1,
     pointerEvents: "none",
+  },
+  continueBackdrop: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    background: "rgba(0,0,0,0.8)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 100,
+    fontFamily: "'Sora',sans-serif",
+  },
+  continuePanel: {
+    width: "85%",
+    maxWidth: 320,
+    padding: "32px 24px",
+    borderRadius: 20,
+    background: "rgba(20,20,30,0.95)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+    textAlign: "center",
+  },
+  continueTitle: {
+    fontSize: 28,
+    fontWeight: 900,
+    color: "#fff",
+    letterSpacing: 4,
+    margin: "0 0 12px",
+    fontFamily: "'Sora',sans-serif",
+  },
+  continueDesc: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.5)",
+    lineHeight: 1.6,
+    margin: "0 0 20px",
+    fontFamily: "'Sora',sans-serif",
+  },
+  adBtn: {
+    width: "100%",
+    height: 48,
+    borderRadius: 12,
+    border: "1.5px solid #00aaff",
+    background: "linear-gradient(135deg, rgba(0,170,255,0.15), rgba(0,170,255,0.05))",
+    color: "#00ddff",
+    fontSize: 13,
+    fontWeight: 800,
+    letterSpacing: 1.5,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    fontFamily: "'Sora', sans-serif",
+    transition: "all 0.2s",
+    marginTop: 8,
+  },
+  skipBtn: {
+    width: "100%",
+    height: 40,
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    color: "rgba(255,255,255,0.4)",
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 2,
+    cursor: "pointer",
+    fontFamily: "'Sora', sans-serif",
+    marginTop: 10,
   },
 };

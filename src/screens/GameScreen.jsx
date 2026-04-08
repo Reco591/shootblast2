@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { CANVAS_W, CANVAS_H } from "../game/constants.js";
-import { createGameState, updateGame, renderGame, startDeathScene, updateDeathScene, resetDeltaTime, spawnDrones, tryActivateAbility } from "../game/engine.js";
+import { createGameState, updateGame, renderGame, startDeathScene, updateDeathScene, resetDeltaTime, spawnDrones, tryActivateAbility, showAchievementNotification, getActiveParticleCount, handleEncounterChoice } from "../game/engine.js";
+import { getActiveBuffs } from "../data/playerData.js";
 import { getSkin } from "../data/skins.js";
 import { getWeapon } from "../data/weapons.js";
 import { getPilot } from "../data/pilots.js";
@@ -13,10 +14,13 @@ import {
   startEngine, stopEngine,
   playBossWarning, playBossShoot, playBossHit,
   playBossExplosionSmall, playBossExplosionLarge, playBossDefeated,
-  playLowHp, playCoinPickup, playComboBreak,
+  playLowHp, playCoinPickup, playComboBreak, playAchievement,
+  playPowerupCollect, playAbilityReady, playComboTier,
+  playEncounterStart, playEncounterSuccess, playEncounterDanger,
 } from "../audio/soundManager.js";
 import Tutorial from "../components/Tutorial.jsx";
 import PauseOverlay from "../components/PauseOverlay.jsx";
+import EncounterDialog from "../components/EncounterDialog.jsx";
 import { markTutorialSeen, updateAchievementProgress, getPlayerData } from "../data/playerData.js";
 import { ACHIEVEMENTS } from "../data/achievements.js";
 
@@ -26,6 +30,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
   const [debugMode, setDebugMode] = useState(false);
   const [godMode, setGodMode] = useState(false);
   const [pauseMode, setPauseMode] = useState(null); // null | "main" | "settings" | "confirm-quit"
+  const [encounterUI, setEncounterUI] = useState(null);
   const [muted, setMuted] = useState(!soundEnabled);
   const mutedRef = useRef(!soundEnabled);
   const [showFps, setShowFps] = useState(false);
@@ -190,6 +195,11 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     stateRef.current.pilotBonus = getPilot(pilotId).bonus;
     stateRef.current.equippedDrones = equippedDrones;
     spawnDrones(stateRef.current);
+    // Apply station start_shield buff
+    const buffs = getActiveBuffs();
+    if (buffs.start_shield > 0) {
+      stateRef.current.activeEffects.shield = buffs.start_shield * 1000;
+    }
     stateRef.current.bestCombo = 0;
     stateRef.current.bossDefeatedList = []; // Reset every game — bosses respawn each playthrough
     startTimeRef.current = performance.now();
@@ -198,6 +208,10 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     initAudio(soundEnabled, false, playerData.soundVolume, 0); // no music during gameplay
     if (soundEnabled) startEngine();
     resetDeltaTime(); // initialize delta-time tracking
+
+    // NPC encounter callbacks
+    window.onEncounterDialog = (encData) => setEncounterUI(encData);
+    window.onEncounterEnd = () => setEncounterUI(null);
 
     canvas.addEventListener("touchstart", handleTouch, { passive: false });
     canvas.addEventListener("touchmove", handleTouch, { passive: false });
@@ -241,7 +255,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
               distance: state.distance,
               wave: state.wave,
               kills: state.kills,
-              bestCombo: state.bestCombo,
+              bestCombo: state.bestComboThisGame,
               playTime,
               powerupsCollected: state.powerupsCollected,
               noHitWaves: state.noHitWaves,
@@ -283,8 +297,15 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
           if (sfx.bossExplosionLarge) playBossExplosionLarge();
           if (sfx.bossDefeated) playBossDefeated();
           if (sfx.lowHp) playLowHp();
+          if (sfx.achievement) playAchievement();
           if (sfx.ability) playPowerup();
           if (sfx.coinPickup) playCoinPickup();
+          if (sfx.powerup) playPowerupCollect();
+          if (sfx.abilityReady) playAbilityReady();
+          if (sfx.comboTier) playComboTier();
+          if (sfx.encounterStart) playEncounterStart();
+          if (sfx.encounterSuccess) playEncounterSuccess();
+          if (sfx.encounterDanger) playEncounterDanger();
         }
 
         // Process achievement queue from engine
@@ -292,7 +313,6 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
           const queue = state.achievementQueue.splice(0);
           for (const evt of queue) {
             if (evt.type === "combo") {
-              // Check all combo tier achievements
               const tierAchIds = [
                 "tier_nice", "tier_good", "tier_great", "tier_awesome",
                 "tier_amazing", "tier_incredible", "tier_unstoppable", "tier_ferocious",
@@ -304,25 +324,19 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
               for (const id of tierAchIds) {
                 const result = updateAchievementProgress(id, evt.value);
                 if (result.unlocked) {
-                  state.achievementNotification = result.achievement.name;
-                  state.achievementNotificationTimer = 150;
+                  showAchievementNotification(state, result.achievement, soundEnabled && !mutedRef.current);
                 }
               }
             } else if (evt.type === "boss") {
-              updateAchievementProgress("boss_first", 1);
+              const r1 = updateAchievementProgress("boss_first", 1);
+              if (r1.unlocked) showAchievementNotification(state, r1.achievement, soundEnabled && !mutedRef.current);
               const bossAch = ACHIEVEMENTS.find(a => a.bossId === evt.bossId);
               if (bossAch) {
                 const result = updateAchievementProgress(bossAch.id, 1);
-                if (result.unlocked) {
-                  state.achievementNotification = result.achievement.name;
-                  state.achievementNotificationTimer = 150;
-                }
+                if (result.unlocked) showAchievementNotification(state, result.achievement, soundEnabled && !mutedRef.current);
               }
               const allResult = updateAchievementProgress("boss_all", evt.totalDefeated);
-              if (allResult.unlocked) {
-                state.achievementNotification = allResult.achievement.name;
-                state.achievementNotificationTimer = 150;
-              }
+              if (allResult.unlocked) showAchievementNotification(state, allResult.achievement, soundEnabled && !mutedRef.current);
             }
           }
         }
@@ -361,6 +375,8 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
       canvas.removeEventListener("mousedown", handleMouseDown);
       canvas.removeEventListener("mousemove", handleMouseMove);
       canvas.removeEventListener("mouseup", handleMouseUp);
+      window.onEncounterDialog = null;
+      window.onEncounterEnd = null;
     };
   }, [gameStarted, godMode, handleTouch, handleTouchEnd, handleMouseDown, handleMouseMove, handleMouseUp, onGameOver]);
 
@@ -423,7 +439,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
       </button>
       {/* FPS counter (debug only) */}
       {showFps && (
-        <div style={styles.fpsCounter}>{fpsRef.current.fps} FPS</div>
+        <div style={styles.fpsCounter}>{fpsRef.current.fps} FPS | {getActiveParticleCount()} P</div>
       )}
       {/* Pause overlay */}
       {pauseMode && (
@@ -470,6 +486,20 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
             <button style={{ ...styles.debugBtn, background: "rgba(255,50,50,0.3)" }} onClick={() => setDebugMode(false)}>CLOSE</button>
           </div>
         </div>
+      )}
+      {/* NPC Encounter Dialog */}
+      {encounterUI && (
+        <EncounterDialog
+          encounter={encounterUI}
+          coins={stateRef.current?.actualCoinsThisRun || 0}
+          lives={stateRef.current?.lives || 0}
+          onChoice={(i) => {
+            if (stateRef.current) {
+              handleEncounterChoice(stateRef.current, i);
+              setEncounterUI(null);
+            }
+          }}
+        />
       )}
       {showTutorial && <Tutorial onComplete={handleTutorialComplete} />}
       <style>{`

@@ -206,48 +206,136 @@ export function drawBossWarning(ctx, boss, timer) {
 }
 
 export function drawBossHPBar(ctx, boss, hp, maxHP, phase) {
-  const barWidth = 300;
-  const barX = 60;
-  const barY = 20;
+  const barW = CANVAS_W - 80;
+  const barH = 14;
+  const bx = 40;
+  const by = 30;
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 12px 'Sora', sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(boss.name, barX, barY - 6);
+  const hpPercent = Math.max(0, hp / maxHP);
+  const phases = boss.phases || 3;
 
-  ctx.fillStyle = "rgba(255,255,255,0.3)";
-  ctx.font = "400 9px 'Sora', sans-serif";
-  ctx.textAlign = "right";
-  ctx.fillText(boss.planet + " guardian", barX + barWidth, barY - 6);
+  ctx.save();
 
-  // Bar background
-  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  // Background frame
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
   ctx.beginPath();
-  ctx.roundRect(barX, barY, barWidth, 8, 4);
+  ctx.roundRect(bx - 4, by - 18, barW + 8, barH + 24, 6);
   ctx.fill();
 
-  // Bar fill with boss accent gradient
-  const hpPercent = Math.max(0, hp / maxHP);
-  const fillWidth = barWidth * hpPercent;
-  if (fillWidth > 0) {
-    const grad = ctx.createLinearGradient(barX, barY, barX + fillWidth, barY);
-    grad.addColorStop(0, boss.color);
-    grad.addColorStop(1, boss.colorLight);
-    ctx.fillStyle = grad;
+  // Boss name
+  ctx.font = "800 11px 'Sora', sans-serif";
+  ctx.fillStyle = "#ff4444";
+  ctx.textAlign = "center";
+  ctx.shadowColor = "#ff0000";
+  ctx.shadowBlur = 8;
+  ctx.fillText(boss.name.toUpperCase(), CANVAS_W / 2, by - 4);
+  ctx.shadowBlur = 0;
+
+  // Bar background
+  ctx.fillStyle = "rgba(40,0,0,0.8)";
+  ctx.beginPath();
+  ctx.roundRect(bx, by, barW, barH, 4);
+  ctx.fill();
+
+  // HP fill with gradient based on percentage
+  const color1 = hpPercent > 0.5 ? "#ff6644" : (hpPercent > 0.25 ? "#ffaa00" : "#ff0033");
+  const color2 = hpPercent > 0.5 ? "#ff2211" : (hpPercent > 0.25 ? "#ff5500" : "#cc0022");
+
+  const grad = ctx.createLinearGradient(bx, by, bx, by + barH);
+  grad.addColorStop(0, color1);
+  grad.addColorStop(1, color2);
+
+  ctx.fillStyle = grad;
+  ctx.shadowColor = color1;
+  ctx.shadowBlur = 6;
+  if (barW * hpPercent > 0) {
     ctx.beginPath();
-    ctx.roundRect(barX, barY, fillWidth, 8, 4);
+    ctx.roundRect(bx, by, barW * hpPercent, barH, 4);
     ctx.fill();
   }
+  ctx.shadowBlur = 0;
 
-  // Phase dots
-  if (boss.phases > 1) {
-    for (let i = 0; i < boss.phases; i++) {
-      ctx.fillStyle = i < phase ? boss.color : "rgba(255,255,255,0.1)";
-      ctx.beginPath();
-      ctx.arc(barX + (i * 12) + 6, barY + 16, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  // Inner shine line
+  if (barW * hpPercent > 4) {
+    ctx.fillStyle = "rgba(255,255,255,0.2)";
+    ctx.fillRect(bx + 2, by + 2, (barW * hpPercent) - 4, 2);
   }
+
+  // Phase dividers
+  for (let i = 1; i < phases; i++) {
+    const px = bx + (barW * (i / phases));
+    ctx.strokeStyle = "rgba(255,255,255,0.4)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px, by);
+    ctx.lineTo(px, by + barH);
+    ctx.stroke();
+  }
+
+  // Phase icons above dividers
+  for (let i = 0; i < phases; i++) {
+    const px = bx + (barW * ((i + 0.5) / phases));
+    const py = by - 10;
+
+    const currentPhase = Math.ceil(hpPercent * phases);
+    const isCurrent = (phases - i) === currentPhase;
+    const isPast = (phases - i) > currentPhase;
+
+    // Phase icon circle
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+
+    if (isPast) {
+      ctx.fillStyle = "rgba(100,100,100,0.6)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(150,150,150,0.8)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      // Checkmark
+      ctx.strokeStyle = "#888888";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px - 2, py);
+      ctx.lineTo(px - 0.5, py + 1.5);
+      ctx.lineTo(px + 2, py - 1.5);
+      ctx.stroke();
+    } else if (isCurrent) {
+      ctx.fillStyle = "#ff4444";
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.2;
+      ctx.shadowColor = "#ff2211";
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      // Pulsing dot inside
+      const pulse = 0.8 + Math.sin(Date.now() * 0.008) * 0.3;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(px, py, 1.5 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Future phase
+      ctx.fillStyle = "rgba(40,40,40,0.8)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(80,80,80,0.8)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // HP text centered
+  ctx.font = "700 9px 'Sora', sans-serif";
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.shadowColor = "#000000";
+  ctx.shadowBlur = 3;
+  ctx.fillText(`${Math.ceil(hp)} / ${maxHP}`, CANVAS_W / 2, by + barH + 11);
+  ctx.shadowBlur = 0;
+
+  ctx.restore();
 }
 
 export function drawBossDefeated(ctx, boss, timer) {

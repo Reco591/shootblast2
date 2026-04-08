@@ -3,6 +3,7 @@ import { Play, Home, Crosshair, Zap, BarChart3, Gem, Trophy } from "lucide-react
 import { MILESTONES } from "../data/milestones.js";
 import { formatDistance } from "../utils/formatDistance.js";
 import { playAchievement, playConfirm, startAmbient } from "../audio/soundManager.js";
+import { getActiveBuffs } from "../data/playerData.js";
 
 const W = 420, H = 812;
 
@@ -206,6 +207,29 @@ export default function GameOverScreen({ stats, playerData, onPlayAgain, onMenu 
             {stats.powerupsCollected > 0 && <SummaryRow label="Power-ups collected" value={stats.powerupsCollected} />}
           </div>
         )}
+
+        {/* Station buffs applied */}
+        {phase === "done" && (() => {
+          const buffs = getActiveBuffs();
+          const buffList = [];
+          if (buffs.damage_mult > 0) buffList.push({ label: "Damage", value: `+${(buffs.damage_mult * 100).toFixed(0)}%`, color: "#ff5544" });
+          if (buffs.coin_mult > 0) buffList.push({ label: "Coin earn", value: `+${(buffs.coin_mult * 100).toFixed(0)}%`, color: "#ffdd44" });
+          if (buffs.powerup_duration > 0) buffList.push({ label: "Powerup time", value: `+${(buffs.powerup_duration * 100).toFixed(0)}%`, color: "#aa55ff" });
+          if (buffs.start_shield > 0) buffList.push({ label: "Start shield", value: `${buffs.start_shield}s`, color: "#00aaff" });
+          if (buffs.start_powerups > 0) buffList.push({ label: "Start powerups", value: `+${buffs.start_powerups}`, color: "#aa55ff" });
+          if (buffList.length === 0) return null;
+          return (
+            <div style={{ ...z.summary, animation: "fadeUp 0.5s ease-out" }}>
+              <span style={{ fontSize: 9, fontWeight: 600, color: "rgba(255,255,255,0.25)", letterSpacing: 2, display: "block", marginBottom: 6 }}>STATION BUFFS APPLIED</span>
+              {buffList.map((b, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                  <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "'Sora',sans-serif" }}>{b.label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: b.color, fontFamily: "'Sora',sans-serif" }}>{b.value}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* Achievements */}
         {phase === "done" && stats?.newlyUnlocked?.length > 0 && (

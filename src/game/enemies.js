@@ -1,24 +1,7 @@
 import { CANVAS_W, CANVAS_H, POWERUP_TYPES } from "./constants.js";
 import { spawnParticles, onKill } from "./engine.js";
 import { onLightningHit } from "./lightningChain.js";
-
-// ─── UNLOCK THRESHOLDS ───
-const ENEMY_UNLOCK = [
-  { type: "viper",     distance: 5_000_000 },
-  { type: "gnat",      distance: 30_000_000 },
-  { type: "warper",    distance: 80_000_000 },
-  { type: "sniper",    distance: 100_000_000 },
-  { type: "kamikaze",  distance: 150_000_000 },
-  { type: "bomber",    distance: 200_000_000 },
-  { type: "tank",      distance: 250_000_000 },
-  { type: "minelayer", distance: 300_000_000 },
-  { type: "splitter",  distance: 400_000_000 },
-  { type: "dasher",    distance: 500_000_000 },
-  { type: "elite",     distance: 600_000_000 },
-  { type: "summoner",  distance: 700_000_000 },
-  { type: "phantom",   distance: 1_000_000_000 },
-  { type: "carrier",   distance: 1_500_000_000 },
-];
+import { getCurrentZoneWaves, pickEnemyFromZone } from "./zoneWaves.js";
 
 // ─── ENEMY TYPE DEFINITIONS ───
 const ENEMY_DEFS = {
@@ -85,193 +68,196 @@ const ENEMY_DEFS = {
   },
 };
 
-// ─── SPAWN LOGIC ───
+// ─── SPAWN LOGIC (zone-based) ───
 export function maybeSpawnEnemy(state) {
   if (state.bossActive) return;
 
-  for (const unlock of ENEMY_UNLOCK) {
-    if (state.distance < unlock.distance) continue;
-    const distPast = state.distance - unlock.distance;
-    const chance = Math.min(0.25, 0.05 + (distPast / unlock.distance) * 0.08);
-    if (Math.random() > chance) continue;
+  const zone = getCurrentZoneWaves(state.distance);
+  if (!zone || zone.enemies.length === 0) return;
 
-    const def = ENEMY_DEFS[unlock.type];
+  // Spawn chance scales with distance
+  const distProgress = Math.min(1, state.distance / 12_000_000_000);
+  const chance = 0.05 + distProgress * 0.15;
+  if (Math.random() > chance) return;
 
-    switch (unlock.type) {
-      case "viper": {
-        const count = 2 + Math.floor(Math.random() * 2); // 2-3
-        for (let i = 0; i < count; i++) {
-          state.enemies.push(createEnemy("viper", def, {
-            x: 40 + Math.random() * (CANVAS_W - 80),
-            y: -30 - i * 40,
-            phaseOffset: Math.random() * Math.PI * 2,
-          }));
-        }
-        break;
-      }
-      case "gnat": {
-        const count = 5 + Math.floor(Math.random() * 4); // 5-8
-        const cx = CANVAS_W * 0.3 + Math.random() * CANVAS_W * 0.4;
-        for (let i = 0; i < count; i++) {
-          // V-formation
-          const row = Math.floor(i / 2);
-          const side = i % 2 === 0 ? -1 : 1;
-          const offsetX = i === 0 ? 0 : side * row * 18;
-          const offsetY = i === 0 ? 0 : -row * 14;
-          state.enemies.push(createEnemy("gnat", def, {
-            x: cx + offsetX,
-            y: -20 + offsetY,
-            isLeader: i === 0,
-            wobbleX: 0, wobbleY: 0,
-            targetX: cx + offsetX,
-          }));
-        }
-        break;
-      }
-      case "warper": {
-        const onScreen = state.enemies.filter(e => e.type === "warper").length;
-        if (onScreen >= 2) break;
-        state.enemies.push(createEnemy("warper", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: 80 + Math.random() * (CANVAS_H * 0.4),
-          teleportTimer: 120, // 2 sec
-          shootTimer: 60,
-          visible: true,
-          prevX: 0, prevY: 0,
-          afterimageAlpha: 0,
-        }));
-        break;
-      }
-      case "bomber": {
-        state.enemies.push(createEnemy("bomber", def, {
+  const enemyType = pickEnemyFromZone(zone);
+  const def = ENEMY_DEFS[enemyType];
+  if (!def) return;
+
+  spawnEnemyByType(state, enemyType, def);
+}
+
+function spawnEnemyByType(state, type, def) {
+  switch (type) {
+    case "viper": {
+      const count = 2 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < count; i++) {
+        state.enemies.push(createEnemy("viper", def, {
           x: 40 + Math.random() * (CANVAS_W - 80),
-          y: -60,
-          mineTimer: 180, // 3 sec
-        }));
-        break;
-      }
-      case "elite": {
-        state.enemies.push(createEnemy("elite", def, {
-          x: CANVAS_W / 2,
-          y: -40,
-          shieldHP: def.shield,
-          shootTimer: 150, // 2.5 sec
+          y: -30 - i * 40,
           phaseOffset: Math.random() * Math.PI * 2,
-          enteredScreen: false,
         }));
-        break;
       }
-      case "carrier": {
-        const onScreen = state.enemies.filter(e => e.type === "carrier").length;
-        if (onScreen >= 1) break;
-        state.enemies.push(createEnemy("carrier", def, {
-          x: CANVAS_W / 2,
-          y: -70,
-          targetY: 80 + Math.random() * 40,
-          driftDir: Math.random() < 0.5 ? -1 : 1,
-          spawnTimer: 240, // 4 sec
-          shootTimer: 360, // 6 sec
-          spawnedGnats: [],
-          enteredScreen: false,
+      break;
+    }
+    case "gnat": {
+      const count = 5 + Math.floor(Math.random() * 4);
+      const cx = CANVAS_W * 0.3 + Math.random() * CANVAS_W * 0.4;
+      for (let i = 0; i < count; i++) {
+        const row = Math.floor(i / 2);
+        const side = i % 2 === 0 ? -1 : 1;
+        const offsetX = i === 0 ? 0 : side * row * 18;
+        const offsetY = i === 0 ? 0 : -row * 14;
+        state.enemies.push(createEnemy("gnat", def, {
+          x: cx + offsetX,
+          y: -20 + offsetY,
+          isLeader: i === 0,
+          wobbleX: 0, wobbleY: 0,
+          targetX: cx + offsetX,
         }));
-        break;
       }
-      case "sniper": {
-        const onScreen = state.enemies.filter(e => e.type === "sniper").length;
-        if (onScreen >= 2) break;
-        state.enemies.push(createEnemy("sniper", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: 40 + Math.random() * 30,
-          aimTimer: 0,
-          aimX: state.player.x,
-          aimY: state.player.y,
-          enteredScreen: false,
-        }));
-        break;
-      }
-      case "kamikaze": {
-        // Spawns in pairs
-        for (let i = 0; i < 2; i++) {
-          const angle = Math.atan2(state.player.y - (-30), state.player.x - (80 + Math.random() * (CANVAS_W - 160)));
-          const spawnX = 80 + Math.random() * (CANVAS_W - 160);
-          state.enemies.push(createEnemy("kamikaze", def, {
-            x: spawnX,
-            y: -30 - i * 30,
-            vx: 0, vy: 0,
-            locked: false,
-            pulseTimer: 0,
-          }));
-        }
-        break;
-      }
-      case "tank": {
-        const onScreen = state.enemies.filter(e => e.type === "tank").length;
-        if (onScreen >= 1) break;
-        state.enemies.push(createEnemy("tank", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: -50,
-          shootTimer: 240, // 4 sec
-          turretAngle: 0,
-        }));
-        break;
-      }
-      case "minelayer": {
-        state.enemies.push(createEnemy("minelayer", def, {
-          x: Math.random() < 0.5 ? -20 : CANVAS_W + 20,
-          y: 60 + Math.random() * 100,
-          driftDir: 0, // set below
-          minesDropped: 0,
-          mineTimer: 60,
-        }));
-        // Set drift direction based on spawn side
-        const ml = state.enemies[state.enemies.length - 1];
-        ml.driftDir = ml.x < 0 ? 1 : -1;
-        break;
-      }
-      case "splitter": {
-        state.enemies.push(createEnemy("splitter", def, {
-          x: 40 + Math.random() * (CANVAS_W - 80),
-          y: -30,
+      break;
+    }
+    case "warper": {
+      const onScreen = state.enemies.filter(e => e.type === "warper").length;
+      if (onScreen >= 2) break;
+      state.enemies.push(createEnemy("warper", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: 80 + Math.random() * (CANVAS_H * 0.4),
+        teleportTimer: 120,
+        shootTimer: 60,
+        visible: true,
+        prevX: 0, prevY: 0,
+        afterimageAlpha: 0,
+      }));
+      break;
+    }
+    case "bomber": {
+      state.enemies.push(createEnemy("bomber", def, {
+        x: 40 + Math.random() * (CANVAS_W - 80),
+        y: -60,
+        mineTimer: 180,
+      }));
+      break;
+    }
+    case "elite": {
+      state.enemies.push(createEnemy("elite", def, {
+        x: CANVAS_W / 2,
+        y: -40,
+        shieldHP: def.shield,
+        shootTimer: 150,
+        phaseOffset: Math.random() * Math.PI * 2,
+        enteredScreen: false,
+      }));
+      break;
+    }
+    case "carrier": {
+      const onScreen = state.enemies.filter(e => e.type === "carrier").length;
+      if (onScreen >= 1) break;
+      state.enemies.push(createEnemy("carrier", def, {
+        x: CANVAS_W / 2,
+        y: -70,
+        targetY: 80 + Math.random() * 40,
+        driftDir: Math.random() < 0.5 ? -1 : 1,
+        spawnTimer: 240,
+        shootTimer: 360,
+        spawnedGnats: [],
+        enteredScreen: false,
+      }));
+      break;
+    }
+    case "sniper": {
+      const onScreen = state.enemies.filter(e => e.type === "sniper").length;
+      if (onScreen >= 2) break;
+      state.enemies.push(createEnemy("sniper", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: 40 + Math.random() * 30,
+        aimTimer: 0,
+        aimX: state.player.x,
+        aimY: state.player.y,
+        enteredScreen: false,
+      }));
+      break;
+    }
+    case "kamikaze": {
+      for (let i = 0; i < 2; i++) {
+        const spawnX = 80 + Math.random() * (CANVAS_W - 160);
+        state.enemies.push(createEnemy("kamikaze", def, {
+          x: spawnX,
+          y: -30 - i * 30,
+          vx: 0, vy: 0,
+          locked: false,
           pulseTimer: 0,
         }));
-        break;
       }
-      case "dasher": {
-        state.enemies.push(createEnemy("dasher", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: -20,
-          state: "pause",
-          stateTimer: 0,
-          dashDir: 0,
-          chargeGlow: 0,
-        }));
-        break;
-      }
-      case "summoner": {
-        const onScreen = state.enemies.filter(e => e.type === "summoner").length;
-        if (onScreen >= 1) break;
-        state.enemies.push(createEnemy("summoner", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: -40,
-          summonTimer: 120,
-          orbAngle: 0,
-        }));
-        break;
-      }
-      case "phantom": {
-        const onScreen = state.enemies.filter(e => e.type === "phantom").length;
-        if (onScreen >= 2) break;
-        state.enemies.push(createEnemy("phantom", def, {
-          x: 60 + Math.random() * (CANVAS_W - 120),
-          y: -30,
-          visible: true,
-          alpha: 1,
-          visTimer: 0,
-          phase: Math.random() * Math.PI * 2,
-          shootTimer: 180,
-        }));
-        break;
-      }
+      break;
+    }
+    case "tank": {
+      const onScreen = state.enemies.filter(e => e.type === "tank").length;
+      if (onScreen >= 1) break;
+      state.enemies.push(createEnemy("tank", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: -50,
+        shootTimer: 240,
+        turretAngle: 0,
+      }));
+      break;
+    }
+    case "minelayer": {
+      state.enemies.push(createEnemy("minelayer", def, {
+        x: Math.random() < 0.5 ? -20 : CANVAS_W + 20,
+        y: 60 + Math.random() * 100,
+        driftDir: 0,
+        minesDropped: 0,
+        mineTimer: 60,
+      }));
+      const ml = state.enemies[state.enemies.length - 1];
+      ml.driftDir = ml.x < 0 ? 1 : -1;
+      break;
+    }
+    case "splitter": {
+      state.enemies.push(createEnemy("splitter", def, {
+        x: 40 + Math.random() * (CANVAS_W - 80),
+        y: -30,
+        pulseTimer: 0,
+      }));
+      break;
+    }
+    case "dasher": {
+      state.enemies.push(createEnemy("dasher", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: -20,
+        state: "pause",
+        stateTimer: 0,
+        dashDir: 0,
+        chargeGlow: 0,
+      }));
+      break;
+    }
+    case "summoner": {
+      const onScreen = state.enemies.filter(e => e.type === "summoner").length;
+      if (onScreen >= 1) break;
+      state.enemies.push(createEnemy("summoner", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: -40,
+        summonTimer: 120,
+        orbAngle: 0,
+      }));
+      break;
+    }
+    case "phantom": {
+      const onScreen = state.enemies.filter(e => e.type === "phantom").length;
+      if (onScreen >= 2) break;
+      state.enemies.push(createEnemy("phantom", def, {
+        x: 60 + Math.random() * (CANVAS_W - 120),
+        y: -30,
+        visible: true,
+        alpha: 1,
+        visTimer: 0,
+        phase: Math.random() * Math.PI * 2,
+        shootTimer: 180,
+      }));
+      break;
     }
   }
 }

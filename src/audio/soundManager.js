@@ -95,6 +95,76 @@ export function playDailyReward() {
   setTimeout(() => playNoise(0.2, 0.05, 5000, "highpass"), 300);
 }
 
+export function playUIHover() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(800, ctx.currentTime);
+  gain.gain.setValueAtTime(0.04, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+  osc.connect(gain).connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.05);
+}
+
+export function playPowerupCollect() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(600, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.12);
+  gain.gain.setValueAtTime(0.12, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  osc.connect(gain).connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.2);
+}
+
+export function playPurchase() {
+  const ctx = getCtx();
+  [600, 900].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.08);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.08 + 0.15);
+    osc.connect(gain).connect(sfxGain);
+    osc.start(ctx.currentTime + i * 0.08);
+    osc.stop(ctx.currentTime + i * 0.08 + 0.15);
+  });
+}
+
+export function playAbilityReady() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(880, ctx.currentTime);
+  osc.frequency.linearRampToValueAtTime(1320, ctx.currentTime + 0.1);
+  gain.gain.setValueAtTime(0.08, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  osc.connect(gain).connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.15);
+}
+
+export function playComboTier() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(600, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(1500, ctx.currentTime + 0.15);
+  gain.gain.setValueAtTime(0.1, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  osc.connect(gain).connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.2);
+}
+
 // ─── GAME SOUNDS ───
 
 export function playShoot() {
@@ -127,6 +197,21 @@ export function playPowerup() {
   [400, 600, 800, 1200].forEach((freq, i) => {
     setTimeout(() => playTone(freq, 0.15, "sine", 0.12), i * 40);
   });
+}
+
+export function playUpgrade() {
+  const ctx = getCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(440, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+  osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.3);
+  gain.gain.setValueAtTime(0.1, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+  osc.connect(gain).connect(sfxGain);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.5);
 }
 
 export function playPlayerHit() {
@@ -252,6 +337,33 @@ export function playBossDefeated() {
     }, i * 80);
   });
   setTimeout(() => playNoise(0.3, 0.1, 4000, "highpass"), 300);
+}
+
+// ─── NPC ENCOUNTER SOUNDS ───
+
+export function playEncounterStart() {
+  // Mysterious hail — descending tone sequence
+  [800, 600, 450].forEach((freq, i) => {
+    setTimeout(() => playTone(freq, 0.25, "sine", 0.1), i * 120);
+  });
+  playNoise(0.4, 0.04, 1500, "lowpass");
+}
+
+export function playEncounterSuccess() {
+  // Positive resolution — ascending chime
+  [500, 700, 900, 1200].forEach((freq, i) => {
+    setTimeout(() => playTone(freq, 0.2, "triangle", 0.1), i * 70);
+  });
+}
+
+export function playEncounterDanger() {
+  // Alarm — harsh descending tones
+  [600, 400, 200].forEach((freq, i) => {
+    setTimeout(() => {
+      playTone(freq, 0.15, "sawtooth", 0.1);
+      playNoise(0.1, 0.06, 2000, "highpass");
+    }, i * 80);
+  });
 }
 
 // ─── AMBIENT / LOOPS ───

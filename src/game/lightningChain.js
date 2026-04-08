@@ -1,3 +1,5 @@
+import { spawnPoolParticle } from "./engine.js";
+
 export function onLightningHit(state, bullet, firstTarget) {
   let currentTarget = firstTarget;
   let remainingChains = bullet.chains || 0;
@@ -57,14 +59,10 @@ export function onLightningHit(state, bullet, firstTarget) {
 
 function chainParticles(state, x, y) {
   for (let i = 0; i < 4; i++) {
-    state.particles.push({
+    spawnPoolParticle(
       x, y,
-      vx: (Math.random() - 0.5) * 3,
-      vy: (Math.random() - 0.5) * 3,
-      life: 0.8,
-      decay: 0.04,
-      size: 2,
-      color: "#88ddff",
-    });
+      (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3,
+      0.8, 0.04, 2, "#88ddff"
+    );
   }
 }

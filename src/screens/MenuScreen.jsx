@@ -2,12 +2,14 @@ import { useState, useEffect, useRef } from "react";
 import {
   Play, Target, Rocket, Trophy, BarChart3, X, Lock, Gem, Check,
   Settings as SettingsIcon, Volume2, Music, Smartphone, Crosshair,
-  Trash2, Zap, Clock, TrendingUp, Gift, Flame
+  Trash2, Zap, Clock, TrendingUp, Gift, Flame, Building
 } from "lucide-react";
 import { formatDistance } from "../utils/formatDistance.js";
 import { getSkin, SKINS, getTagColor } from "../data/skins.js";
-import { buySkin, equipSkin, updateSettings, resetAllData, getMissions, claimMission, claimDailyReward as claimDailyRewardFn, buyWeapon, upgradeWeapon, equipWeapon, buyPilot, equipPilot, buyDrone, equipDrone, unequipDrone } from "../data/playerData.js";
+import { buySkin, equipSkin, updateSettings, resetAllData, getMissions, claimMission, claimDailyReward as claimDailyRewardFn, buyWeapon, upgradeWeapon, equipWeapon, buyPilot, equipPilot, buyDrone, equipDrone, unequipDrone, getPendingStationCoins, getActiveBuffs } from "../data/playerData.js";
+import StationScreen from "./StationScreen.jsx";
 import { WEAPONS, getWeapon, MAX_WEAPON_LEVEL } from "../data/weapons.js";
+import { STATION_MODULES } from "../data/modules.js";
 import { renderCustomShip } from "../components/CustomShips.jsx";
 import { PilotHelmet } from "../components/PilotHelmet.jsx";
 import { PILOTS, getPilotTagColor } from "../data/pilots.js";
@@ -17,9 +19,9 @@ import { ACHIEVEMENTS, ACHIEVEMENT_CATEGORIES, getAchievementsByCategory, getCat
 import { DAILY_REWARDS, checkDailyReward as checkDailyRewardFn } from "../data/dailyReward.js";
 import {
   initAudio, playClick, playConfirm, playSheetOpen, playSheetClose,
-  playCoinCollect, playDailyReward as playDailyRewardSound,
+  playCoinCollect, playDailyReward as playDailyRewardSound, playUpgrade,
   startAmbient, stopAmbient, setSoundEnabled, setMusicEnabled,
-  setSoundVolume, setMusicVolume,
+  setSoundVolume, setMusicVolume, playUIHover, playPurchase,
 } from "../audio/soundManager.js";
 
 const W = 420, H = 812, CX = W / 2, CY = H / 2 - 30;
@@ -150,12 +152,14 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
   const [showPlay, setShowPlay] = useState(false);
   const [showCards, setShowCards] = useState(false);
   const [sheet, setSheet] = useState(null);
+  const [showStation, setShowStation] = useState(false);
   const [bp, setBp] = useState(false);
   const [hangarMode, setHangarMode] = useState("ships");
   const [achCat, setAchCat] = useState("kills");
   const [showDailyReward, setShowDailyReward] = useState(false);
   const [dailyRewardInfo, setDailyRewardInfo] = useState(null);
   const [rewardClaimed, setRewardClaimed] = useState(false);
+  const [upgradeAnim, setUpgradeAnim] = useState(null);
 
   const bestDistance = playerData?.bestDistance || 0;
   const skin = getSkin(playerData?.equippedSkin);
@@ -618,15 +622,20 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
         {showCards && (() => {
           const mData = getMissions();
           const unclaimedCount = mData.missions.filter(m => !m.claimed).length;
+          const pendingCoins = getPendingStationCoins();
           return <div style={z.cards}>{[
           { k: "missions", l: "Missions", s: unclaimedCount > 0 ? `${unclaimedCount} active` : "All done", I: Target, c: "#00aaff" },
+          { k: "station", l: "Station", s: pendingCoins > 0 ? `+${pendingCoins}` : "Build & buff", I: Building, c: "#00ddaa", badge: pendingCoins > 0 },
           { k: "hangar", l: "Hangar", s: `${SKINS.length} ships`, I: Rocket, c: "#aa55ff" },
           { k: "armory", l: "Armory", s: `${WEAPONS.length} weapons`, I: Crosshair, c: "#ff5544" },
           { k: "awards", l: "Awards", s: `${(playerData.achievements?.unlocked || []).length}/${ACHIEVEMENTS.length}`, I: Trophy, c: "#ffaa00" },
           { k: "stats", l: "Stats", s: "Lifetime", I: BarChart3, c: "#00ddaa" },
         ].map(c => (
-          <button key={c.k} style={{ ...z.card, ...(c.k === "hangar" ? { borderColor: hexToRgba(skin.accent, 0.15) } : {}) }} onClick={() => { playSheetOpen(); setSheet(c.k); }}>
-            <div style={{ ...z.ci, background: `${c.c}10`, border: `1px solid ${c.c}20` }}><c.I size={17} color={c.c} strokeWidth={2} /></div>
+          <button key={c.k} style={{ ...z.card, ...(c.k === "hangar" ? { borderColor: hexToRgba(skin.accent, 0.15) } : {}) }} onClick={() => { if (c.k === "station") { playSheetOpen(); setShowStation(true); } else { playSheetOpen(); setSheet(c.k); } }}>
+            <div style={{ ...z.ci, background: `${c.c}10`, border: `1px solid ${c.c}20`, position: "relative" }}>
+              <c.I size={17} color={c.c} strokeWidth={2} />
+              {c.badge && <div style={{ position: "absolute", top: -3, right: -3, width: 8, height: 8, borderRadius: "50%", background: "#ff4444", border: "1.5px solid rgba(4,4,16,0.98)" }} />}
+            </div>
             <span style={z.cl}>{c.l}</span><span style={z.cs}>{c.s}</span>
           </button>
         ))}</div>;
@@ -856,7 +865,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                           disabled={!canAfford}
                           onClick={() => {
                             if (!canAfford) return;
-                            playConfirm();
+                            playPurchase();
                             const result = buyPilot(pl.id, pl.price);
                             if (result.success) onDataChange(result.data);
                           }}
@@ -944,7 +953,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                         disabled={!canAfford}
                         onClick={() => {
                           if (!canAfford) return;
-                          playConfirm();
+                          playPurchase();
                           const result = buySkin(sk.id, sk.price);
                           if (result.success) onDataChange(result.data);
                         }}
@@ -967,15 +976,27 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
               })}
             </div>
             )}
-            {hangarMode === "drones" && (
-              <div>
-                {/* Equipped drone slots */}
+            {hangarMode === "drones" && (() => {
+              const drBuffsCheck = getActiveBuffs();
+              const droneBayUnlocked = drBuffsCheck.drone_slots > 0;
+              const maxDroneSlots = drBuffsCheck.drone_slots || 0;
+
+              if (!droneBayUnlocked) {
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px", textAlign: "center" }}>
+                    <div style={{ fontSize: 32, marginBottom: 12 }}>🔒</div>
+                    <h3 style={{ color: "#fff", fontSize: 14, fontWeight: 800, letterSpacing: 2, margin: 0 }}>DRONES LOCKED</h3>
+                    <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>Build a Drone Bay in your Space Station to unlock drone purchases.</p>
+                    <p style={{ color: "#88ddff", fontSize: 11, marginTop: 4 }}>{"Requires: Command Center Lv2 \u2192 Drone Bay"}</p>
+                  </div>
+                );
+              }
+
+              return (<div>
                 <div style={{ marginBottom: 12, padding: "10px 12px", background: "rgba(255,255,255,0.02)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
-                  <p style={{ fontSize: 8, fontWeight: 600, color: "rgba(255,255,255,0.4)", letterSpacing: 2, marginBottom: 8 }}>
-                    EQUIPPED ({(playerData.equippedDrones || []).length}/2)
-                  </p>
+                  <p style={{ fontSize: 8, fontWeight: 600, color: "rgba(255,255,255,0.4)", letterSpacing: 2, marginBottom: 8 }}>EQUIPPED ({(playerData.equippedDrones || []).length}/{maxDroneSlots})</p>
                   <div style={{ display: "flex", gap: 8 }}>
-                    {[0, 1].map(slot => {
+                    {[...Array(maxDroneSlots)].map((_, slot) => {
                       const droneId = (playerData.equippedDrones || [])[slot];
                       const drone = droneId ? getDrone(droneId) : null;
                       return (
@@ -984,12 +1005,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                           background: drone ? `${drone.color}15` : "rgba(255,255,255,0.02)",
                           border: drone ? `1px solid ${drone.color}44` : "1px dashed rgba(255,255,255,0.1)",
                           cursor: drone ? "pointer" : "default",
-                        }} onClick={() => {
-                          if (drone) {
-                            playClick();
-                            onDataChange(unequipDrone(slot));
-                          }
-                        }}>
+                        }} onClick={() => { if (drone) { playClick(); onDataChange(unequipDrone(slot)); } }}>
                           {drone ? (
                             <>
                               <div style={{ width: 20, height: 20, borderRadius: 10, background: drone.color, margin: "0 auto 4px", boxShadow: `0 0 8px ${drone.color}66` }} />
@@ -1004,115 +1020,57 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                     })}
                   </div>
                 </div>
-
-                {/* Drones grid */}
                 <div style={z.sg}>
                   {DRONES.map(drone => {
                     const isOwned = (playerData.ownedDrones || []).includes(drone.id);
                     const isEquipped = (playerData.equippedDrones || []).includes(drone.id);
-                    const canAfford = playerData.coins >= drone.price;
-                    const slotsFull = (playerData.equippedDrones || []).length >= 2;
+                    const drnDiscount = 1 - (drBuffsCheck.drone_discount || 0);
+                    const drnPrice = Math.floor(drone.price * drnDiscount);
+                    const canAfford = playerData.coins >= drnPrice;
+                    const slotsFull = (playerData.equippedDrones || []).length >= maxDroneSlots;
                     const tagCol = getDroneTagColor(drone.tag);
-
                     return (
-                      <div key={drone.id} style={{
-                        ...z.sc,
-                        borderColor: isEquipped ? drone.color : "rgba(255,255,255,0.04)",
-                      }}>
-                        <div style={{
-                          width: 36, height: 36, borderRadius: 18,
-                          background: `${drone.color}20`,
-                          border: `1px solid ${drone.color}44`,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                        }}>
-                          <div style={{
-                            width: 18, height: 18, borderRadius: 9,
-                            background: drone.color,
-                            boxShadow: `0 0 10px ${drone.color}88`,
-                          }} />
+                      <div key={drone.id} style={{ ...z.sc, borderColor: isEquipped ? drone.color : "rgba(255,255,255,0.04)" }}>
+                        <div style={{ width: 36, height: 36, borderRadius: 18, background: `${drone.color}20`, border: `1px solid ${drone.color}44`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ width: 18, height: 18, borderRadius: 9, background: drone.color, boxShadow: `0 0 10px ${drone.color}88` }} />
                         </div>
-                        <span style={{ fontSize: 9, fontWeight: 700, color: drone.color, letterSpacing: 2 }}>
-                          {drone.name}
-                        </span>
-                        <span style={{
-                          fontSize: 7, fontWeight: 600, color: tagCol,
-                          letterSpacing: 2, padding: "2px 6px",
-                          border: `1px solid ${tagCol}44`,
-                          borderRadius: 4,
-                        }}>
-                          {drone.tag}
-                        </span>
-                        <span style={{ fontSize: 7, color: "rgba(255,255,255,0.4)", fontWeight: 500, textAlign: "center", lineHeight: 1.3 }}>
-                          {drone.desc}
-                        </span>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: drone.color, letterSpacing: 2 }}>{drone.name}</span>
+                        <span style={{ fontSize: 7, fontWeight: 600, color: tagCol, letterSpacing: 2, padding: "2px 6px", border: `1px solid ${tagCol}44`, borderRadius: 4 }}>{drone.tag}</span>
+                        <span style={{ fontSize: 7, color: "rgba(255,255,255,0.4)", fontWeight: 500, textAlign: "center", lineHeight: 1.3 }}>{drone.desc}</span>
                         <div style={{ display: "flex", gap: 6, fontSize: 7, color: "rgba(255,255,255,0.3)" }}>
                           <span>DMG {drone.bulletDmg}</span>
-                          <span>·</span>
+                          <span>{"\u00b7"}</span>
                           <span>SPD {drone.bulletSpeed}</span>
                         </div>
-
                         {isEquipped && (
                           <span style={{ fontSize: 7, color: "#00dd78", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
                             <Check size={10} /> EQUIPPED
                           </span>
                         )}
-
                         {isOwned && !isEquipped && !slotsFull && (
-                          <button
-                            onClick={() => {
-                              playConfirm();
-                              onDataChange(equipDrone(drone.id, (playerData.equippedDrones || []).length));
-                            }}
-                            style={{
-                              fontSize: 8, fontWeight: 700, color: "#fff",
-                              background: drone.color, border: "none",
-                              borderRadius: 6, padding: "4px 14px", cursor: "pointer",
-                              fontFamily: "'Sora',sans-serif",
-                            }}
-                          >
-                            EQUIP
-                          </button>
+                          <button onClick={() => { playConfirm(); onDataChange(equipDrone(drone.id, (playerData.equippedDrones || []).length)); }} style={{ fontSize: 8, fontWeight: 700, color: "#fff", background: drone.color, border: "none", borderRadius: 6, padding: "4px 14px", cursor: "pointer", fontFamily: "'Sora',sans-serif" }}>EQUIP</button>
                         )}
-
                         {isOwned && !isEquipped && slotsFull && (
                           <span style={{ fontSize: 7, color: "rgba(255,255,255,0.25)", fontWeight: 600 }}>SLOTS FULL</span>
                         )}
-
                         {!isOwned && (
-                          <button
-                            disabled={!canAfford}
-                            onClick={() => {
-                              if (!canAfford) return;
-                              playConfirm();
-                              const result = buyDrone(drone.id, drone.price);
-                              if (result.success) onDataChange(result.data);
-                            }}
-                            style={{
-                              fontSize: 9, fontWeight: 700,
-                              color: canAfford ? "#fff" : "rgba(255,255,255,0.25)",
-                              background: canAfford ? drone.color : "rgba(255,255,255,0.05)",
-                              border: canAfford ? "none" : "1px solid rgba(255,255,255,0.08)",
-                              borderRadius: 6, padding: "4px 14px", cursor: canAfford ? "pointer" : "default",
-                              display: "flex", alignItems: "center", gap: 4,
-                              opacity: canAfford ? 1 : 0.5,
-                              fontFamily: "'Sora',sans-serif",
-                            }}
-                          >
+                          <button disabled={!canAfford} onClick={() => { if (!canAfford) return; playPurchase(); const result = buyDrone(drone.id, drnPrice); if (result.success) onDataChange(result.data); }} style={{ fontSize: 9, fontWeight: 700, color: canAfford ? "#fff" : "rgba(255,255,255,0.25)", background: canAfford ? drone.color : "rgba(255,255,255,0.05)", border: canAfford ? "none" : "1px solid rgba(255,255,255,0.08)", borderRadius: 6, padding: "4px 14px", cursor: canAfford ? "pointer" : "default", display: "flex", alignItems: "center", gap: 4, opacity: canAfford ? 1 : 0.5, fontFamily: "'Sora',sans-serif" }}>
                             <Gem size={11} color={canAfford ? "#fff" : "#666"} />
-                            {drone.price.toLocaleString()}
+                            {drnPrice.toLocaleString()}
                           </button>
                         )}
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            )}
+              </div>);
+            })()}
             </div>
           )}
           {sheet === "armory" && (() => {
             const ownedWeapons = playerData.ownedWeapons || [{ id: "blaster", level: 0 }];
             const equippedId = playerData.equippedWeapon || "blaster";
+            const weaponsUnlocked = playerData.station?.weaponsUnlocked || ["blaster"];
 
             return (
               <div>
@@ -1120,21 +1078,62 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                   Select & upgrade your weapons
                 </p>
                 {WEAPONS.map(wp => {
+                  const isWeaponUnlocked = weaponsUnlocked.includes(wp.id);
                   const ownedEntry = ownedWeapons.find(o => o.id === wp.id);
                   const owned = !!ownedEntry;
                   const level = owned ? ownedEntry.level : 0;
                   const equipped = equippedId === wp.id;
-                  const canBuy = !owned && playerData.coins >= wp.price;
-                  const canUpgrade = owned && level < MAX_WEAPON_LEVEL && playerData.coins >= wp.upgradeCosts[level + 1];
+                  const canBuy = isWeaponUnlocked && !owned && playerData.coins >= wp.price;
+                  const stBuffs = getActiveBuffs();
+                  const wpnDiscount = 1 - (stBuffs.upgrade_discount || 0);
+                  const wpnUpCost = level < MAX_WEAPON_LEVEL ? Math.floor(wp.upgradeCosts[level + 1] * wpnDiscount) : 0;
+                  const canUpgrade = owned && level < MAX_WEAPON_LEVEL && playerData.coins >= wpnUpCost;
                   const stats = wp.levels[level];
                   const maxStats = wp.levels[MAX_WEAPON_LEVEL];
                   const nextStats = level < MAX_WEAPON_LEVEL ? wp.levels[level + 1] : null;
+
+                  // Locked weapon - not yet unlocked via Weapons Lab
+                  if (!isWeaponUnlocked) {
+                    const labLevel = STATION_MODULES.find(m => m.id === "weapons_lab")?.levels.findIndex(l => l.unlocksWeapon === wp.id);
+                    const reqLevel = labLevel != null ? labLevel + 1 : "?";
+                    return (
+                      <div key={wp.id} style={{
+                        padding: "14px 16px", borderRadius: 14, marginBottom: 8,
+                        background: "rgba(255,255,255,0.01)",
+                        border: "1px solid rgba(255,255,255,0.04)",
+                        opacity: 0.4,
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{
+                            width: 36, height: 36, borderRadius: 10,
+                            background: "rgba(255,255,255,0.05)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}>
+                            <Lock size={14} color="rgba(255,255,255,0.3)" />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.5)", letterSpacing: 1.5, display: "block" }}>
+                              {wp.name}
+                            </span>
+                            <span style={{ fontSize: 9, color: "#ff5544", display: "block", marginTop: 2 }}>
+                              LOCKED
+                            </span>
+                            <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", display: "block", marginTop: 1 }}>
+                              Build Weapons Lab Lv{reqLevel} to unlock
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div key={wp.id} style={{
                       padding: "14px 16px", borderRadius: 14, marginBottom: 8,
                       background: equipped ? `${wp.color}08` : "rgba(255,255,255,0.02)",
                       border: `1px solid ${equipped ? hexToRgba(wp.color, 0.2) : "rgba(255,255,255,0.04)"}`,
+                      position: "relative", overflow: "hidden",
                     }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                         <div style={{
@@ -1235,9 +1234,13 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                             disabled={!canUpgrade}
                             onClick={() => {
                               if (!canUpgrade) return;
-                              playConfirm();
-                              const result = upgradeWeapon(wp.id, wp.upgradeCosts[level + 1]);
-                              if (result.success) onDataChange(result.data);
+                              const result = upgradeWeapon(wp.id, wpnUpCost);
+                              if (result.success) {
+                                setUpgradeAnim({ weaponId: wp.id, fromLevel: level, toLevel: level + 1, timer: 0 });
+                                onDataChange(result.data);
+                                playUpgrade();
+                                setTimeout(() => setUpgradeAnim(null), 1500);
+                              }
                             }}
                             style={{
                               fontSize: 8, fontWeight: 700,
@@ -1249,7 +1252,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                               opacity: canUpgrade ? 1 : 0.5,
                             }}
                           >
-                            UPGRADE <Gem size={9} color={canUpgrade ? "#ffaa00" : "#666"} /> {wp.upgradeCosts[level + 1].toLocaleString()}
+                            UPGRADE <Gem size={9} color={canUpgrade ? "#ffaa00" : "#666"} /> {wpnUpCost.toLocaleString()}
                           </button>
                         )}
                         {owned && level >= MAX_WEAPON_LEVEL && (
@@ -1262,7 +1265,7 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                             disabled={!canBuy}
                             onClick={() => {
                               if (!canBuy) return;
-                              playConfirm();
+                              playPurchase();
                               const result = buyWeapon(wp.id, wp.price);
                               if (result.success) onDataChange(result.data);
                             }}
@@ -1281,6 +1284,63 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
                           </button>
                         )}
                       </div>
+                      {upgradeAnim && upgradeAnim.weaponId === wp.id && (
+                        <div style={{
+                          position: "absolute",
+                          top: 0, left: 0, right: 0, bottom: 0,
+                          display: "flex", flexDirection: "column",
+                          alignItems: "center", justifyContent: "center",
+                          background: "rgba(0,0,0,0.7)",
+                          borderRadius: 14,
+                          pointerEvents: "none",
+                          animation: "upgradeOverlayFadeIn 0.15s ease-out",
+                          zIndex: 10,
+                        }}>
+                          {/* Radial burst */}
+                          <div style={{
+                            position: "absolute",
+                            width: 100, height: 100,
+                            animation: "upgradeOverlayRotate 1.5s linear",
+                          }}>
+                            {[...Array(12)].map((_, i) => (
+                              <div key={i} style={{
+                                position: "absolute",
+                                top: "50%", left: "50%",
+                                width: 3, height: 30,
+                                background: "linear-gradient(to top, transparent, #00aaff)",
+                                transformOrigin: "top center",
+                                transform: `rotate(${i * 30}deg) translateY(-40px)`,
+                                animation: "upgradeOverlayBurstRay 0.6s ease-out",
+                              }} />
+                            ))}
+                          </div>
+                          {/* Level text */}
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 12,
+                            animation: "upgradeOverlayPopIn 0.4s ease-out",
+                            zIndex: 2,
+                          }}>
+                            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.4)", fontWeight: 700, textDecoration: "line-through" }}>
+                              LV.{upgradeAnim.fromLevel + 1}
+                            </div>
+                            <div style={{ fontSize: 18, color: "#00aaff", fontWeight: 900 }}>→</div>
+                            <div style={{
+                              fontSize: 22, color: "#00ffaa", fontWeight: 900,
+                              textShadow: "0 0 12px #00ffaa",
+                              animation: "upgradeOverlayGlow 0.8s ease-out",
+                            }}>
+                              LV.{upgradeAnim.toLevel + 1}
+                            </div>
+                          </div>
+                          {/* "UPGRADED!" text */}
+                          <div style={{
+                            position: "absolute", bottom: 12,
+                            fontSize: 11, color: "#00ffaa", fontWeight: 800,
+                            letterSpacing: 3,
+                            animation: "upgradeOverlaySlideUp 0.6s ease-out",
+                          }}>UPGRADED!</div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1724,6 +1784,13 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
         </div>
       )}
 
+      {showStation && (
+        <StationScreen
+          onClose={() => { playSheetClose(); setShowStation(false); }}
+          onDataChange={onDataChange}
+        />
+      )}
+
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
         @keyframes fi{0%{opacity:0;transform:translateY(18px)}100%{opacity:1;transform:translateY(0)}}
@@ -1733,6 +1800,13 @@ export default function MenuScreen({ onPlay, playerData, onDataChange }) {
         @keyframes gp{0%,100%{box-shadow:0 4px 30px ${hexToRgba(skin.accent, 0.3)}}50%{box-shadow:0 4px 40px ${hexToRgba(skin.accent, 0.5)}}}
         @keyframes fadeIn{0%{opacity:0}100%{opacity:1}}
         @keyframes popIn{0%{opacity:0;transform:scale(0.85)}60%{transform:scale(1.02)}100%{opacity:1;transform:scale(1)}}
+        @keyframes coinFloat{0%{opacity:1;transform:translateY(0) scale(1)}100%{opacity:0;transform:translateY(-30px) scale(1.3)}}
+        @keyframes upgradeOverlayFadeIn{0%{opacity:0}100%{opacity:1}}
+        @keyframes upgradeOverlayRotate{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+        @keyframes upgradeOverlayBurstRay{0%{opacity:1}100%{opacity:0;transform:translateY(-20px)}}
+        @keyframes upgradeOverlayPopIn{0%{transform:scale(0.3);opacity:0}60%{transform:scale(1.2)}100%{transform:scale(1);opacity:1}}
+        @keyframes upgradeOverlayGlow{0%,100%{text-shadow:0 0 12px #00ffaa}50%{text-shadow:0 0 25px #00ffaa,0 0 40px #00ffaa}}
+        @keyframes upgradeOverlaySlideUp{0%{transform:translateY(20px);opacity:0}100%{transform:translateY(0);opacity:1}}
         *{-webkit-tap-highlight-color:transparent;box-sizing:border-box;margin:0}
         input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:${skin.accent};cursor:pointer;box-shadow:0 0 8px ${hexToRgba(skin.accent, 0.4)}}
         input[type="range"]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:${skin.accent};cursor:pointer;border:none;box-shadow:0 0 8px ${hexToRgba(skin.accent, 0.4)}}

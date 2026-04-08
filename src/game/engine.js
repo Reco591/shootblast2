@@ -4,6 +4,7 @@ import {
   WAVE_DURATION_FRAMES, METEOR_TYPES, POWERUP_TYPES,
 } from "./constants.js";
 import { MILESTONES } from "../data/milestones.js";
+import { ACHIEVEMENT_CATEGORIES } from "../data/achievements.js";
 import { getBossForDistance } from "../data/bosses.js";
 import { updateBoss } from "./bossAI.js";
 import { drawBoss, drawBossProjectiles, drawBossWarning, drawBossHPBar, drawBossDefeated } from "./bossRenderer.js";
@@ -11,11 +12,14 @@ import { maybeSpawnEnemy, updateEnemies, updateEnemyProjectiles, checkBulletEnem
 import { drawEnemies, drawEnemyProjectiles } from "./enemyRenderer.js";
 import { spawnComboText, updateComboEffects, renderComboEffects, clearComboTexts } from "./comboEffects.js";
 import { renderZoneBackground, getCurrentZoneName } from "./zoneRenderer.js";
+import { getCurrentZoneWaves } from "./zoneWaves.js";
+import { getActiveBuffs } from "../data/playerData.js";
 import { formatDistance } from "../utils/formatDistance.js";
 import { getWeapon } from "../data/weapons.js";
 import { onLightningHit } from "./lightningChain.js";
 import { getPilot } from "../data/pilots.js";
 import { getDrone } from "../data/drones.js";
+import { pickRandomEncounter } from "../data/encounters.js";
 
 const BASE_DISTANCE_PER_FRAME = 8333; // ~500,000 km per second at 60fps
 
@@ -33,6 +37,88 @@ export function computeDeltaTime() {
 
 export function getDeltaTime() { return deltaTime; }
 export function resetDeltaTime() { lastFrameTime = performance.now(); deltaTime = 1; }
+
+// ── Particle Pool ──
+const PARTICLE_POOL_SIZE = 400;
+const particlePool = [];
+let activeParticleCount = 0;
+
+for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+  particlePool.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, decay: 0, size: 0, color: "#ffffff" });
+}
+
+export function spawnPoolParticle(x, y, vx, vy, life, decay, size, color) {
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    const p = particlePool[i];
+    if (!p.active) {
+      p.active = true; p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+      p.life = life; p.decay = decay; p.size = size; p.color = color;
+      activeParticleCount++;
+      return p;
+    }
+  }
+  return null;
+}
+
+function updatePoolParticles(dt) {
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 0.03 * dt;
+    p.life -= p.decay * dt;
+    if (p.life <= 0 || p.y > CANVAS_H + 20 || p.y < -20) {
+      p.active = false;
+      activeParticleCount--;
+    }
+  }
+}
+
+function updatePoolParticlesDeathScene(slowFactor) {
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    p.x += p.vx * slowFactor;
+    p.y += p.vy * slowFactor;
+    p.life -= p.decay * slowFactor;
+    if (p.life <= 0) {
+      p.active = false;
+      activeParticleCount--;
+    }
+  }
+}
+
+function drawPoolParticles(ctx) {
+  const colorGroups = {};
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    if (!colorGroups[p.color]) colorGroups[p.color] = [];
+    colorGroups[p.color].push(p);
+  }
+  for (const color in colorGroups) {
+    ctx.fillStyle = color;
+    const group = colorGroups[color];
+    for (let j = 0; j < group.length; j++) {
+      const p = group[j];
+      ctx.globalAlpha = p.life;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function resetParticlePool() {
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    particlePool[i].active = false;
+  }
+  activeParticleCount = 0;
+}
+
+export function getActiveParticleCount() { return activeParticleCount; }
 
 // ── Combo Tiers (for engine-level VFX: kill flash, speed lines, screen shake) ──
 const COMBO_TIERS = [
@@ -144,7 +230,9 @@ function triggerComboBreak(state) {
 }
 
 // Central kill handler — call for every enemy/meteor/boss destruction
+// FIX: Default sfx to state.sfx when not provided (prevents crash from ability kills)
 export function onKill(state, x, y, color, bonusDistance, sfx, coinValue) {
+  if (!sfx) sfx = state.sfx;
   const prevTierIdx = getComboTierIndex(state.combo);
   state.combo++;
   state.comboTimer = COMBO_TIMEOUT;
@@ -163,15 +251,13 @@ export function onKill(state, x, y, color, bonusDistance, sfx, coinValue) {
   for (let pi = 0; pi < pCount; pi++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 1 + Math.random() * spread;
-    state.particles.push({
+    spawnPoolParticle(
       x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      life: 1,
-      decay: 0.03 + Math.random() * 0.03,
-      size: 0.8 + Math.random() * 1.5,
-      color: Math.random() < 0.3 ? newTier.color : color,
-    });
+      Math.cos(angle) * speed, Math.sin(angle) * speed,
+      1, 0.03 + Math.random() * 0.03,
+      0.8 + Math.random() * 1.5,
+      Math.random() < 0.3 ? newTier.color : color
+    );
   }
 
   // Kill flash
@@ -193,6 +279,7 @@ export function onKill(state, x, y, color, bonusDistance, sfx, coinValue) {
       maxTimer: 90,
     };
     sfx.combo = true;
+    sfx.comboTier = true;
     state.lastComboTier = newTierIdx;
   }
 
@@ -205,8 +292,10 @@ export function onKill(state, x, y, color, bonusDistance, sfx, coinValue) {
 
   // Coin pop animation
   if (coinValue && coinValue > 0) {
-    state.actualCoinsThisRun += coinValue;
-    spawnCoinPop(state, x, y, coinValue);
+    const coinMult = 1 + (state.stationBuffs?.coin_mult || 0);
+    const finalCoins = Math.floor(coinValue * coinMult);
+    state.actualCoinsThisRun += finalCoins;
+    spawnCoinPop(state, x, y, finalCoins);
   }
 }
 
@@ -387,6 +476,7 @@ function generateMeteorShape(radius) {
 }
 
 export function createGameState() {
+  resetParticlePool();
   const stars = Array.from({ length: 120 }, () => ({
     x: Math.random() * CANVAS_W,
     y: Math.random() * CANVAS_H,
@@ -395,7 +485,7 @@ export function createGameState() {
     hue: Math.random() > 0.85 ? 190 + Math.random() * 50 : 0,
   }));
 
-  return {
+  const state = {
     // Death scene
     deathScene: null,
     player: { x: CANVAS_W / 2, y: CANVAS_H - 80, w: 28, h: 36, targetX: CANVAS_W / 2 },
@@ -404,7 +494,6 @@ export function createGameState() {
     powerups: [],
     enemies: [],
     enemyProjectiles: [],
-    particles: [],
     stars,
     lives: INITIAL_LIVES,
     distance: 0,
@@ -434,8 +523,7 @@ export function createGameState() {
     speedLineParticles: [],
     comboPopup: null,
     comboBreak: null,
-    // Zone notification
-    zoneNotification: null,
+    // FIX: Removed duplicate zoneNotification (defined below with zoneNotificationTimer)
     lastZoneName: "",
     activeEffects: { shield: 0, rapid: 0, triple: 0, slowtime: 0, magnet: 0, doublepts: 0, freeze: 0 },
     powerupsCollected: 0,
@@ -468,12 +556,17 @@ export function createGameState() {
     achievementQueue: [],
     achievementNotification: null,
     achievementNotificationTimer: 0,
+    achNotificationQueue: [],
+    achNotification: null,
+    _achNextDelay: 0,
     // Coin pop animation
     coinPops: [],
     hudCoinDisplay: 0,
     actualCoinsThisRun: 0,
     coinCounterPulse: 1,
     meteorSpawningEnabled: true,
+    // Station buffs (loaded once at game start)
+    stationBuffs: getActiveBuffs(),
     // Wave events
     activeWaveEvent: null,
     waveEventTimer: 0,
@@ -483,6 +576,12 @@ export function createGameState() {
     eventCoinsEarned: 0,
     rewardPopup: null,
     waveEventSpawnTimer: 0,
+    // NPC Encounters
+    encounter: null,         // active encounter object
+    encounterTimer: 0,       // seconds since last check
+    encounterNextTime: 45 + Math.random() * 30, // 45-75 sec
+    encounterPaused: false,  // true while encounter dialog is open
+    encounterEnemySpawns: [],// queued enemy spawns from choices
     // Drones
     drones: [],
     // Weapon
@@ -498,15 +597,40 @@ export function createGameState() {
     barrageTimer: 0,
     dashState: null,
     forceWave: null,
+    // Zone tracking
+    lastZoneDesc: null,
+    zoneNotification: null,   // string: zone description for top HUD
+    zoneNotificationTimer: 0,
+    zoneNameNotification: null, // object: {name, timer, color} for center popup
     // Sound event flags (consumed each frame by GameScreen)
-    sfx: { shoot: false, explosionSmall: false, explosionLarge: false, powerup: false, playerHit: false, combo: false, waveStart: false, milestone: false, gameOver: false, bossWarning: false, bossShoot: false, bossHit: false, bossExplosionSmall: false, bossExplosionLarge: false, bossDefeated: false, eventWarning: false, eventComplete: false, lowHp: false, ability: false, coinPickup: false },
+    sfx: { shoot: false, explosionSmall: false, explosionLarge: false, powerup: false, playerHit: false, combo: false, comboBreak: false, waveStart: false, milestone: false, gameOver: false, bossWarning: false, bossShoot: false, bossHit: false, bossExplosionSmall: false, bossExplosionLarge: false, bossDefeated: false, eventWarning: false, eventComplete: false, lowHp: false, ability: false, coinPickup: false, comboTier: false, abilityReady: false, encounterStart: false, encounterSuccess: false, encounterDanger: false },
     lastLives: 3,
   };
+
+  // Apply station buffs at game start
+  const buffs = state.stationBuffs;
+  if (buffs.start_shield > 0) {
+    state.activeEffects.shield = buffs.start_shield * 1000;
+  }
+  if (buffs.start_powerups > 0) {
+    for (let i = 0; i < buffs.start_powerups; i++) {
+      const pType = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+      state.powerups.push({
+        x: state.player.x + (Math.random() - 0.5) * 60,
+        y: 100 + Math.random() * 80,
+        type: pType.type, color: pType.color, duration: pType.duration,
+        vy: 1.5, pulse: 0,
+      });
+    }
+  }
+
+  return state;
 }
 
 export function spawnMeteor(state, distanceSpeedMult = 1) {
   const w = state.wave;
   const tier = getDifficultyTier(state.distance);
+  const zone = getCurrentZoneWaves(state.distance);
   const typeWeights = [5, w > 2 ? 3 : 0, w > 4 ? 2 : 0];
   const total = typeWeights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
@@ -532,6 +656,7 @@ export function spawnMeteor(state, distanceSpeedMult = 1) {
     rotSpeed: (Math.random() - 0.5) * 0.03,
     shape,
     hue: 15 + Math.random() * 25,
+    meteorStyle: zone.meteorStyle,
   });
 }
 
@@ -551,6 +676,7 @@ function spawnGoldenMeteor(state) {
     shape,
     hue: 45,
     golden: true,
+    meteorStyle: "golden",  // FIX: golden meteors always use golden style regardless of zone
     coinValue: 5,
   });
 }
@@ -558,6 +684,8 @@ function spawnGoldenMeteor(state) {
 function spawnSmallMeteor(state, speedMult) {
   const radius = 12;
   const shape = generateMeteorShape(radius);
+  // FIX: Add meteorStyle from current zone so asteroid_field event meteors match zone theme
+  const zone = getCurrentZoneWaves(state.distance);
   state.meteors.push({
     x: radius + Math.random() * (CANVAS_W - radius * 2),
     y: -radius * 2,
@@ -570,6 +698,7 @@ function spawnSmallMeteor(state, speedMult) {
     rotSpeed: (Math.random() - 0.5) * 0.04,
     shape,
     hue: 15 + Math.random() * 25,
+    meteorStyle: zone.meteorStyle,
   });
 }
 
@@ -578,6 +707,7 @@ function spawnEventEnemy(state, type, opts = {}) {
   const DEFS = {
     elite: { hp: 6, speed: 2, coins: 10, distBonus: 150_000, hitRadius: 25, accent: "#7744cc", accentLight: "#bb88ff", shield: 4 },
     gnat:  { hp: 1, speed: 2.5, coins: 1, distBonus: 15_000, hitRadius: 10, accent: "#00cc88", accentLight: "#00ffaa" },
+    kamikaze: { hp: 2, speed: 6, coins: 5, distBonus: 60_000, hitRadius: 16, accent: "#cc2200", accentLight: "#ff4422" },
   };
   const def = DEFS[type];
   if (!def) return;
@@ -608,6 +738,10 @@ function spawnEventEnemy(state, type, opts = {}) {
     enemy.wobbleY = 0;
     enemy.targetX = enemy.x;
   }
+  if (type === "kamikaze") {
+    enemy.lockedOnPlayer = false;
+    enemy.chargeAngle = 0;
+  }
   state.enemies.push(enemy);
 }
 
@@ -615,16 +749,60 @@ export function spawnParticles(state, x, y, count, color, sizeBase) {
   for (let i = 0; i < count; i++) {
     const a = Math.random() * Math.PI * 2;
     const spd = Math.random() * 3 + 1;
-    state.particles.push({
+    spawnPoolParticle(
       x, y,
-      vx: Math.cos(a) * spd,
-      vy: Math.sin(a) * spd,
-      life: 1,
-      decay: 0.015 + Math.random() * 0.02,
-      size: (sizeBase || 2) * (0.5 + Math.random()),
-      color,
-    });
+      Math.cos(a) * spd, Math.sin(a) * spd,
+      1, 0.015 + Math.random() * 0.02,
+      (sizeBase || 2) * (0.5 + Math.random()),
+      color
+    );
   }
+}
+
+// ── NPC Encounter Choice Handler ──
+
+export function handleEncounterChoice(state, choiceIndex) {
+  if (!state.encounter || state.encounter.phase !== "dialog") return;
+  const enc = state.encounter.data;
+  const choice = enc.choices[choiceIndex];
+  if (!choice) return;
+
+  // Check condition
+  if (choice.condition) {
+    const checkData = { coins: state.actualCoinsThisRun, lives: state.lives };
+    if (!choice.condition(checkData)) return;
+  }
+
+  // Execute outcome
+  const result = choice.outcome(state);
+
+  // Resume game from encounter pause
+  state.encounterPaused = false;
+  resetDeltaTime();
+
+  // Show result
+  state.encounter.resultMsg = result.msg;
+  state.encounter.resultSuccess = result.success;
+  state.encounter.resultDanger = result.danger || false;
+  state.encounter.phase = "result";
+  state.encounter.timer = 0;
+
+  // Reward popup for result message
+  const color = result.success ? "#00ff88" : (result.danger ? "#ff3344" : "#888888");
+  state.rewardPopup = { text: result.msg, color, timer: 150, maxTimer: 150 };
+
+  // Sound
+  if (result.success) state.sfx.encounterSuccess = true;
+  else if (result.danger) state.sfx.encounterDanger = true;
+
+  // Coin pop for coin changes
+  if (result.msg.includes("+") && result.msg.includes("coins")) {
+    const match = result.msg.match(/\+(\d+)/);
+    if (match) spawnCoinPop(state, CANVAS_W / 2, CANVAS_H / 2, parseInt(match[1]));
+  }
+
+  // Hide React dialog
+  if (window.onEncounterEnd) window.onEncounterEnd();
 }
 
 export function spawnDrones(state) {
@@ -740,39 +918,67 @@ function updateLightningArcs(state, dt) {
 function drawLightningArcs(ctx, state) {
   state.lightningArcs.forEach(arc => {
     const t = arc.timer / arc.maxTimer;
-    ctx.save();
-    ctx.strokeStyle = "#88ddff";
-    ctx.lineWidth = 2;
-    ctx.shadowColor = "#aaeeff";
-    ctx.shadowBlur = 10;
-    ctx.globalAlpha = t * 0.9;
 
     arc.links.forEach(link => {
-      const segments = 6;
-      ctx.beginPath();
-      ctx.moveTo(link.from.x, link.from.y);
-      for (let i = 1; i < segments; i++) {
-        const t2 = i / segments;
-        const x = link.from.x + (link.to.x - link.from.x) * t2 + (Math.random() - 0.5) * 8;
-        const y = link.from.y + (link.to.y - link.from.y) * t2 + (Math.random() - 0.5) * 8;
-        ctx.lineTo(x, y);
+      // Generate 3 parallel jagged lines per arc for thickness
+      for (let layer = 0; layer < 3; layer++) {
+        const segments = 10;
+        const maxOffset = layer === 0 ? 4 : (layer === 1 ? 7 : 10);
+        const lineWidth = layer === 0 ? 3 : (layer === 1 ? 2 : 1);
+        const alpha = layer === 0 ? t * 0.95 : (layer === 1 ? t * 0.5 : t * 0.25);
+
+        ctx.save();
+        ctx.strokeStyle = layer === 0 ? "#ffffff" : "#88ddff";
+        ctx.lineWidth = lineWidth;
+        ctx.shadowColor = "#88ddff";
+        ctx.shadowBlur = layer === 0 ? 15 : 8;
+        ctx.globalAlpha = alpha;
+        ctx.lineCap = "round";
+
+        ctx.beginPath();
+        ctx.moveTo(link.from.x, link.from.y);
+
+        for (let i = 1; i < segments; i++) {
+          const progress = i / segments;
+          const x = link.from.x + (link.to.x - link.from.x) * progress + (Math.random() - 0.5) * maxOffset;
+          const y = link.from.y + (link.to.y - link.from.y) * progress + (Math.random() - 0.5) * maxOffset;
+          ctx.lineTo(x, y);
+        }
+        ctx.lineTo(link.to.x, link.to.y);
+        ctx.stroke();
+        ctx.restore();
       }
-      ctx.lineTo(link.to.x, link.to.y);
-      ctx.stroke();
 
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 1;
-      ctx.shadowBlur = 0;
+      // Branching sparks at endpoints
+      [link.from, link.to].forEach(point => {
+        ctx.save();
+        ctx.strokeStyle = "#aaeeff";
+        ctx.lineWidth = 1;
+        ctx.shadowColor = "#88ddff";
+        ctx.shadowBlur = 6;
+        ctx.globalAlpha = t * 0.6;
+        for (let i = 0; i < 4; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const len = 4 + Math.random() * 6;
+          ctx.beginPath();
+          ctx.moveTo(point.x, point.y);
+          ctx.lineTo(point.x + Math.cos(angle) * len, point.y + Math.sin(angle) * len);
+          ctx.stroke();
+        }
+        ctx.restore();
+      });
+
+      // Hit flash at each target
+      ctx.save();
+      ctx.fillStyle = "#ffffff";
+      ctx.globalAlpha = t * 0.5;
+      ctx.shadowColor = "#88ddff";
+      ctx.shadowBlur = 20;
       ctx.beginPath();
-      ctx.moveTo(link.from.x, link.from.y);
-      ctx.lineTo(link.to.x, link.to.y);
-      ctx.stroke();
-      ctx.strokeStyle = "#88ddff";
-      ctx.lineWidth = 2;
-      ctx.shadowBlur = 10;
+      ctx.arc(link.to.x, link.to.y, 6 * t + 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     });
-
-    ctx.restore();
   });
 }
 
@@ -936,13 +1142,8 @@ export function updateDeathScene(state) {
     state.shakeY = 0;
   }
 
-  // Existing particles continue
-  state.particles.forEach(p => {
-    p.x += p.vx * state.deathScene.slowFactor;
-    p.y += p.vy * state.deathScene.slowFactor;
-    p.life -= p.decay * state.deathScene.slowFactor;
-  });
-  state.particles = state.particles.filter(p => p.life > 0);
+  // Existing particles continue (pooled)
+  updatePoolParticlesDeathScene(state.deathScene.slowFactor);
 
   // After 2.5 sec, signal done
   return state.deathScene.timer >= state.deathScene.duration;
@@ -1039,8 +1240,12 @@ function updateAbility(state, dt) {
   const dtMs = dt * 16.667;
 
   if (state.ability.cooldown > 0) {
+    const prev = state.ability.cooldown;
     state.ability.cooldown -= dtMs;
-    if (state.ability.cooldown < 0) state.ability.cooldown = 0;
+    if (state.ability.cooldown <= 0) {
+      state.ability.cooldown = 0;
+      if (prev > 0) state.sfx.abilityReady = true;
+    }
   }
 
   if (state.ability.duration > 0) {
@@ -1196,7 +1401,8 @@ export function updateGame(state) {
   sfx.bossWarning = false; sfx.bossShoot = false; sfx.bossHit = false;
   sfx.bossExplosionSmall = false; sfx.bossExplosionLarge = false; sfx.bossDefeated = false;
   sfx.eventWarning = false; sfx.eventComplete = false; sfx.lowHp = false; sfx.ability = false; sfx.coinPickup = false;
-  sfx.comboBreak = false;
+  sfx.comboBreak = false; sfx.achievement = false; sfx.comboTier = false; sfx.abilityReady = false;
+  sfx.encounterStart = false; sfx.encounterSuccess = false; sfx.encounterDanger = false;
 
   // Compute delta time
   const dt = computeDeltaTime();
@@ -1206,8 +1412,9 @@ export function updateGame(state) {
   //   console.log("Distance:", state.distance, "Defeated:", state.bossDefeatedList, "ActiveBoss:", state.bossActive?.id, "BossState:", state.bossState, "WaveEvent:", state.activeWaveEvent?.id);
   // }
 
-  // World speed multiplier (HYPERSPEED event)
-  const worldSpeed = state.activeWaveEvent?.id === "speed_run" ? 3 : 1;
+  // World speed multiplier (HYPERSPEED event or encounter buff)
+  const encounterSpeed = state._encounterSpeedMult || 1;
+  const worldSpeed = state.activeWaveEvent?.id === "speed_run" ? 3 : encounterSpeed;
   state.worldSpeed = worldSpeed;
 
   // Slow-time and freeze factors for enemies (worldSpeed stacks on top)
@@ -1223,6 +1430,20 @@ export function updateGame(state) {
   // Distance accumulation (paused during boss fight)
   if (!state.bossActive) {
     state.distance += BASE_DISTANCE_PER_FRAME * dt * distMultiplier * worldSpeed;
+  }
+
+  // Zone change check
+  const currentZone = getCurrentZoneWaves(state.distance);
+  if (currentZone.description && currentZone.description !== state.lastZoneDesc) {
+    state.lastZoneDesc = currentZone.description;
+    state.zoneNotification = currentZone.description.toUpperCase();
+    state.zoneNotificationTimer = 180; // 3 seconds
+  }
+  if (state.zoneNotificationTimer > 0) {
+    state.zoneNotificationTimer -= dt;
+    if (state.zoneNotificationTimer <= 0) {
+      state.zoneNotification = null;
+    }
   }
 
   // Milestone check
@@ -1245,11 +1466,44 @@ export function updateGame(state) {
     }
   }
 
-  // Achievement notification decay
+  // Achievement notification decay (legacy)
   if (state.achievementNotificationTimer > 0) {
     state.achievementNotificationTimer -= dt;
     if (state.achievementNotificationTimer <= 0) {
       state.achievementNotification = null;
+    }
+  }
+
+  // Dramatic achievement notification update
+  if (state.achNotification) {
+    state.achNotification.timer -= dt;
+    state.achNotification.rays += dt;
+    const t = state.achNotification.timer / state.achNotification.maxTimer;
+    if (t > 0.85) state.achNotification.phase = "intro";
+    else if (t < 0.15) state.achNotification.phase = "outro";
+    else state.achNotification.phase = "display";
+    state.achNotification.sparkles.forEach(s => {
+      if (s.delay > 0) { s.delay -= dt; return; }
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.vy += 0.05 * dt;
+      s.life -= 0.015 * dt;
+    });
+    if (state.achNotification.timer <= 0) {
+      state.achNotification = null;
+      if (state.achNotificationQueue.length > 0) {
+        state._achNextDelay = 6;
+      }
+    }
+  }
+  if (state._achNextDelay > 0) {
+    state._achNextDelay -= dt;
+    if (state._achNextDelay <= 0) {
+      state._achNextDelay = 0;
+      if (state.achNotificationQueue.length > 0) {
+        const next = state.achNotificationQueue.shift();
+        _startAchNotification(state, next);
+      }
     }
   }
 
@@ -1620,7 +1874,9 @@ export function updateGame(state) {
     sfx.shoot = true;
     const px = state.player.x;
     const py = state.player.y - state.player.h;
-    const adjustedDmg = wStats.dmg * pilotDmgMult;
+    const stationDmgMult = 1 + (state.stationBuffs?.damage_mult || 0);
+    const encounterDmgMult = state._encounterDamageMult || 1;
+    const adjustedDmg = wStats.dmg * pilotDmgMult * stationDmgMult * encounterDmgMult;
     const bulletBase = { size: wStats.size, dmg: adjustedDmg, weaponId: state.weaponId };
 
     // Triple-shot powerup adds extra bullets
@@ -1709,11 +1965,11 @@ export function updateGame(state) {
       // Smoke trail particles
       b.smokeTimer = (b.smokeTimer || 0) + 1;
       if (b.smokeTimer % 3 === 0) {
-        state.particles.push({
-          x: b.x, y: b.y,
-          vx: (Math.random() - 0.5) * 0.5, vy: Math.random() * 0.5 + 0.2,
-          life: 0.6, decay: 0.03, size: 2, color: "rgba(180,180,180,0.5)",
-        });
+        spawnPoolParticle(
+          b.x, b.y,
+          (Math.random() - 0.5) * 0.5, Math.random() * 0.5 + 0.2,
+          0.6, 0.03, 2, "rgba(180,180,180,0.5)"
+        );
       }
     }
     b.x += b.vx * dt;
@@ -1775,6 +2031,68 @@ export function updateGame(state) {
     state.rewardPopup.timer -= dt;
   }
 
+  // ─── NPC ENCOUNTER SYSTEM ───
+
+  // Encounter timer — only tick when no boss, no wave event, no active encounter dialog
+  if (!state.bossActive && !state.activeWaveEvent && !state.waveEventWarning && !state.encounter) {
+    state.encounterTimer += dt / 60; // convert frames to seconds
+    if (state.encounterTimer >= state.encounterNextTime) {
+      state.encounterTimer = 0;
+      state.encounterNextTime = 45 + Math.random() * 30; // 45-75 sec
+      {
+        const enc = pickRandomEncounter();
+        state.encounter = {
+          data: enc,
+          phase: "approach",  // approach → dialog → result → leave
+          timer: 0,
+          npcX: -50,
+          npcY: 150,
+          targetX: CANVAS_W / 2 - 60,
+          resultMsg: null,
+          resultSuccess: false,
+          resultDanger: false,
+        };
+        sfx.encounterStart = true;
+      }
+    }
+  }
+
+  // Update active encounter animation
+  if (state.encounter) {
+    state.encounter.timer += dt;
+    if (state.encounter.phase === "approach") {
+      state.encounter.npcX += 1.5 * dt;
+      if (state.encounter.npcX >= state.encounter.targetX) {
+        state.encounter.phase = "dialog";
+        state.encounterPaused = true;
+        // Signal React layer to show dialog
+        if (window.onEncounterDialog) {
+          window.onEncounterDialog(state.encounter.data);
+        }
+      }
+    } else if (state.encounter.phase === "result") {
+      if (state.encounter.timer > 150) {
+        state.encounter.phase = "leave";
+      }
+    } else if (state.encounter.phase === "leave") {
+      state.encounter.npcX += 2.5 * dt;
+      if (state.encounter.npcX > CANVAS_W + 60) {
+        state.encounter = null;
+      }
+    }
+  }
+
+  // Pause game completely during encounter dialog
+  if (state.encounterPaused) return;
+
+  // Process encounter enemy spawns
+  if (state.encounterEnemySpawns && state.encounterEnemySpawns.length > 0) {
+    const spawns = state.encounterEnemySpawns.splice(0);
+    for (const s of spawns) {
+      spawnEventEnemy(state, s.type, { offsetX: s.x - CANVAS_W / 2 });
+    }
+  }
+
   // Spawn meteors (distance-based difficulty affects spawn rate)
   if (state.waveEventWarning) {
     // Pause spawning during warning
@@ -1825,15 +2143,18 @@ export function updateGame(state) {
       }
     }
   } else if (state.meteorSpawningEnabled) {
+    const zone = getCurrentZoneWaves(state.distance);
+    const meteorMult = zone.meteorMultiplier || 1;
     const baseSpawnRate = 60;
-    const spawnRate = Math.max(10, Math.floor(baseSpawnRate * tier.spawn));
+    const spawnRate = Math.max(6, Math.floor(baseSpawnRate * tier.spawn / meteorMult));
     if (state.frame % spawnRate === 0) {
       spawnMeteor(state, tier.speed);
     }
   }
 
-  // Enemy ships spawn check (every 60 frames, not during boss or wave events)
-  if (state.frame % 60 === 0 && !state.bossActive && !state.activeWaveEvent && !state.waveEventWarning) {
+  // Enemy ships spawn check (every 60 frames, not during boss, wave events, or encounter dialog)
+  const encounterBlocking = state.encounter && state.encounter.phase === "dialog";
+  if (state.frame % 60 === 0 && !state.bossActive && !state.activeWaveEvent && !state.waveEventWarning && !encounterBlocking) {
     maybeSpawnEnemy(state);
   }
   updateEnemies(state, dt, enemySlowFactor);
@@ -1884,8 +2205,9 @@ export function updateGame(state) {
           // Combo via centralized onKill (with coin value for pop animation)
           onKill(state, m.x, m.y, m.golden ? "#ffcc44" : `hsl(${m.hue},70%,55%)`, m.bonusDistance * rewardMult, sfx, meteorCoins);
 
-          // Powerup drop
-          if (Math.random() < 0.15) {
+          // Powerup drop (doubled by karma buff)
+          const dropChance = 0.15 * (state._encounterPowerupMult || 1);
+          if (Math.random() < dropChance) {
             const pType = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
             state.powerups.push({
               x: m.x, y: m.y,
@@ -1971,7 +2293,8 @@ export function updateGame(state) {
         activateNuke(state, sfx);
         state.nukesUsed++;
       } else {
-        state.activeEffects[p.type] = p.duration;
+        const puDurMult = 1 + (state.stationBuffs?.powerup_duration || 0);
+        state.activeEffects[p.type] = p.duration * puDurMult;
       }
       state.powerupsCollected++;
       sfx.powerup = true;
@@ -1985,9 +2308,8 @@ export function updateGame(state) {
   // Remove offscreen meteors
   state.meteors = state.meteors.filter(m => m.y < CANVAS_H + m.radius * 2);
 
-  // Particles
-  state.particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 0.03 * dt; p.life -= p.decay * dt; });
-  state.particles = state.particles.filter(p => p.life > 0);
+  // Particles (pooled)
+  updatePoolParticles(dt);
 
   // Lightning arcs
   updateLightningArcs(state, dt);
@@ -2001,17 +2323,17 @@ export function updateGame(state) {
     if (s.y > CANVAS_H) { s.y = 0; s.x = Math.random() * CANVAS_W; }
   });
 
-  // Zone change detection
+  // FIX: Zone change detection — uses separate state field to avoid overwriting string notification
   {
     const zoneName = getCurrentZoneName(state.distance);
     if (zoneName !== state.lastZoneName) {
       state.lastZoneName = zoneName;
-      state.zoneNotification = { name: zoneName, timer: 120, color: "#aaddff" };
+      state.zoneNameNotification = { name: zoneName, timer: 120, color: "#aaddff" };
     }
   }
-  // Zone notification decay
-  if (state.zoneNotification && state.zoneNotification.timer > 0) {
-    state.zoneNotification.timer -= dt;
+  // Zone name notification decay
+  if (state.zoneNameNotification && state.zoneNameNotification.timer > 0) {
+    state.zoneNameNotification.timer -= dt;
   }
 
   // Combo decay
@@ -3609,6 +3931,141 @@ function drawAbilityIcon(ctx, x, y, id) {
   }
 }
 
+function drawHUDFrame(ctx) {
+  ctx.save();
+
+  const bracketSize = 18;
+  ctx.strokeStyle = "rgba(100,180,255,0.25)";
+  ctx.lineWidth = 1;
+  ctx.lineCap = "round";
+
+  // Corner brackets
+  ctx.beginPath();
+  ctx.moveTo(8, 8 + bracketSize); ctx.lineTo(8, 8); ctx.lineTo(8 + bracketSize, 8);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(CANVAS_W - 8 - bracketSize, 8); ctx.lineTo(CANVAS_W - 8, 8); ctx.lineTo(CANVAS_W - 8, 8 + bracketSize);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(8, CANVAS_H - 8 - bracketSize); ctx.lineTo(8, CANVAS_H - 8); ctx.lineTo(8 + bracketSize, CANVAS_H - 8);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(CANVAS_W - 8 - bracketSize, CANVAS_H - 8); ctx.lineTo(CANVAS_W - 8, CANVAS_H - 8); ctx.lineTo(CANVAS_W - 8, CANVAS_H - 8 - bracketSize);
+  ctx.stroke();
+
+  // Edge highlight lines
+  ctx.strokeStyle = "rgba(100,180,255,0.08)";
+  ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(40, 8); ctx.lineTo(CANVAS_W - 40, 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(40, CANVAS_H - 8); ctx.lineTo(CANVAS_W - 40, CANVAS_H - 8); ctx.stroke();
+
+  // Center tick marks on top edge
+  ctx.strokeStyle = "rgba(100,180,255,0.3)";
+  ctx.lineWidth = 1;
+  const cx = CANVAS_W / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, 8); ctx.lineTo(cx, 14);
+  ctx.moveTo(cx - 15, 8); ctx.lineTo(cx - 15, 12);
+  ctx.moveTo(cx + 15, 8); ctx.lineTo(cx + 15, 12);
+  ctx.stroke();
+
+  // Side tech details
+  ctx.strokeStyle = "rgba(100,180,255,0.2)";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 3; i++) {
+    const y = CANVAS_H / 2 - 20 + i * 20;
+    ctx.beginPath(); ctx.moveTo(8, y); ctx.lineTo(14, y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(CANVAS_W - 8, y); ctx.lineTo(CANVAS_W - 14, y); ctx.stroke();
+  }
+
+  // Subtle scanline
+  const scanY = (performance.now() * 0.05) % CANVAS_H;
+  ctx.strokeStyle = "rgba(100,180,255,0.04)";
+  ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(0, scanY); ctx.lineTo(CANVAS_W, scanY); ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── NPC Encounter Ship Drawing ──
+
+function drawEncounterShip(ctx, state) {
+  const enc = state.encounter;
+  if (!enc) return;
+  const e = enc.data;
+  const x = enc.npcX;
+  const y = enc.npcY;
+  const t = performance.now() * 0.002;
+
+  ctx.save();
+  ctx.translate(x, y + Math.sin(t) * 3); // gentle hover
+
+  // Engine glow
+  ctx.shadowColor = e.color;
+  ctx.shadowBlur = 20;
+  ctx.fillStyle = e.color + "40";
+  ctx.beginPath();
+  ctx.ellipse(0, 14, 8, 4 + Math.sin(t * 3) * 1.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Ship hull
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = e.color;
+  ctx.beginPath();
+  ctx.moveTo(0, -18);
+  ctx.lineTo(14, 6);
+  ctx.lineTo(10, 14);
+  ctx.lineTo(-10, 14);
+  ctx.lineTo(-14, 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // Hull accent stripe
+  ctx.fillStyle = e.color + "80";
+  ctx.fillRect(-8, 2, 16, 3);
+
+  // Cockpit
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#88ddff";
+  ctx.beginPath();
+  ctx.ellipse(0, -4, 4, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff60";
+  ctx.beginPath();
+  ctx.ellipse(-1, -6, 1.5, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Wings
+  ctx.fillStyle = e.color + "aa";
+  ctx.beginPath();
+  ctx.moveTo(-14, 6);
+  ctx.lineTo(-22, 12);
+  ctx.lineTo(-16, 14);
+  ctx.lineTo(-10, 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(14, 6);
+  ctx.lineTo(22, 12);
+  ctx.lineTo(16, 14);
+  ctx.lineTo(10, 10);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+
+  // Name label during approach/dialog
+  if (enc.phase === "approach" || enc.phase === "dialog") {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, enc.timer / 30);
+    ctx.fillStyle = e.color;
+    ctx.font = "700 9px 'Sora', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(e.name.toUpperCase(), x, y - 26);
+    ctx.restore();
+  }
+}
+
 export function renderGame(ctx, state, skin) {
   const { frame } = state;
 
@@ -3812,7 +4269,6 @@ export function renderGame(ctx, state, skin) {
       ctx.beginPath();
       ctx.arc(0, 0, m.radius * 0.8, 0, Math.PI * 2);
       ctx.fill();
-      // Sparkles
       ctx.fillStyle = "#fff";
       const t = Date.now() * 0.003;
       for (let i = 0; i < 3; i++) {
@@ -3823,7 +4279,7 @@ export function renderGame(ctx, state, skin) {
       }
       ctx.shadowBlur = 0;
     } else {
-      // Normal meteor body
+      // Draw procedural shape
       ctx.beginPath();
       ctx.moveTo(m.shape.pts[0].x, m.shape.pts[0].y);
       for (let i = 1; i < m.shape.pts.length; i++) {
@@ -3831,26 +4287,204 @@ export function renderGame(ctx, state, skin) {
       }
       ctx.closePath();
 
-      const mg = ctx.createRadialGradient(-m.radius * 0.2, -m.radius * 0.2, 0, 0, 0, m.radius);
-      mg.addColorStop(0, `hsl(${m.hue},35%,40%)`);
-      mg.addColorStop(0.6, `hsl(${m.hue},30%,25%)`);
-      mg.addColorStop(1, `hsl(${m.hue},25%,12%)`);
-      ctx.fillStyle = mg;
-      ctx.fill();
-
-      // Rim highlight
-      ctx.strokeStyle = `hsla(${m.hue},20%,55%,0.3)`;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Craters
-      m.shape.craters.forEach(c => {
-        ctx.fillStyle = `hsla(${m.hue},20%,10%,0.4)`;
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = `hsla(${m.hue},15%,35%,0.2)`;
-        ctx.lineWidth = 0.5;
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, Math.PI * 0.8, Math.PI * 1.8); ctx.stroke();
-      });
+      const style = m.meteorStyle || "normal";
+      switch (style) {
+        case "fire": {
+          ctx.fillStyle = "#4a1a08";
+          ctx.strokeStyle = "#ff6622";
+          ctx.lineWidth = 1.5;
+          ctx.fill(); ctx.stroke();
+          ctx.shadowColor = "#ff8833";
+          ctx.shadowBlur = 10;
+          ctx.fillStyle = "#cc4422";
+          ctx.beginPath();
+          ctx.arc(0, 0, m.radius * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = "#ff8833";
+          ctx.lineWidth = 0.6;
+          ctx.beginPath();
+          ctx.moveTo(-m.radius * 0.4, -m.radius * 0.2);
+          ctx.lineTo(m.radius * 0.3, m.radius * 0.4);
+          ctx.stroke();
+          break;
+        }
+        case "toxic": {
+          ctx.fillStyle = "#1a3308";
+          ctx.strokeStyle = "#88cc22";
+          ctx.lineWidth = 1.5;
+          ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#aacc33";
+          ctx.globalAlpha = 0.6;
+          const seed = m.rotation * 1000;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            const ox = Math.sin(seed + i * 7.3) * m.radius * 0.4;
+            const oy = Math.cos(seed + i * 13.1) * m.radius * 0.4;
+            ctx.arc(ox, oy, m.radius * 0.15, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case "rust": {
+          ctx.fillStyle = "#3a1808";
+          ctx.strokeStyle = "#cc6622";
+          ctx.lineWidth = 1;
+          ctx.fill(); ctx.stroke();
+          ctx.strokeStyle = "#aa4422";
+          ctx.lineWidth = 0.5;
+          const rseed = m.rotation * 1000;
+          for (let i = 0; i < 4; i++) {
+            ctx.beginPath();
+            ctx.moveTo(Math.sin(rseed + i * 5.7) * m.radius * 0.5, -m.radius);
+            ctx.lineTo(Math.cos(rseed + i * 3.2) * m.radius * 0.5, m.radius);
+            ctx.stroke();
+          }
+          break;
+        }
+        case "electric": {
+          ctx.fillStyle = "#0a0a28";
+          ctx.strokeStyle = "#4488ff";
+          ctx.lineWidth = 1.5;
+          ctx.fill(); ctx.stroke();
+          ctx.strokeStyle = "#88aaff";
+          ctx.lineWidth = 0.8;
+          const et = Date.now() * 0.01;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            const x1 = Math.sin(et + i * 2.1) * m.radius * 0.6;
+            const y1 = Math.cos(et + i * 3.7) * m.radius * 0.6;
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x1 + Math.sin(et * 3 + i) * 6, y1 + Math.cos(et * 3 + i) * 6);
+            ctx.stroke();
+          }
+          break;
+        }
+        case "ice": {
+          ctx.fillStyle = "#0a1a2a";
+          ctx.strokeStyle = "#88ccee";
+          ctx.lineWidth = 1.5;
+          ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#aaddff";
+          ctx.globalAlpha = 0.6;
+          for (let i = 0; i < 4; i++) {
+            const angle = (i / 4) * Math.PI * 2;
+            const dist = m.radius * 0.4;
+            ctx.beginPath();
+            ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case "golden": {
+          ctx.fillStyle = "#3a2808";
+          ctx.strokeStyle = "#ffcc44";
+          ctx.lineWidth = 1.5;
+          ctx.shadowColor = "#ffaa00";
+          ctx.shadowBlur = 10;
+          ctx.fill(); ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = "#ffdd66";
+          ctx.fillRect(-2, -2, 1, 1);
+          ctx.fillRect(1, 0, 1, 1);
+          break;
+        }
+        case "dark": {
+          ctx.fillStyle = "#0a0414";
+          ctx.strokeStyle = "#6622aa";
+          ctx.lineWidth = 1;
+          ctx.fill(); ctx.stroke();
+          ctx.shadowColor = "#aa44ff";
+          ctx.shadowBlur = 6;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          break;
+        }
+        case "frozen": {
+          ctx.fillStyle = "#0a1418";
+          ctx.strokeStyle = "#66aacc";
+          ctx.lineWidth = 1;
+          ctx.fill(); ctx.stroke();
+          ctx.strokeStyle = "#aaccee";
+          ctx.lineWidth = 0.4;
+          ctx.beginPath();
+          ctx.moveTo(-m.radius * 0.3, -m.radius * 0.3);
+          ctx.lineTo(m.radius * 0.2, 0);
+          ctx.lineTo(-m.radius * 0.2, m.radius * 0.3);
+          ctx.stroke();
+          break;
+        }
+        case "void": {
+          ctx.fillStyle = "#000000";
+          ctx.strokeStyle = "#aa44ff";
+          ctx.lineWidth = 1.5;
+          ctx.fill(); ctx.stroke();
+          ctx.shadowColor = "#dd66ff";
+          ctx.shadowBlur = 12;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = "#2a0a44";
+          ctx.beginPath();
+          ctx.arc(0, 0, m.radius * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+        case "dense": {
+          // Asteroid belt — rocky, metallic gray-brown with visible mineral veins
+          ctx.fillStyle = "#2a2218";
+          ctx.strokeStyle = "#887766";
+          ctx.lineWidth = 2;
+          ctx.fill(); ctx.stroke();
+          // Mineral veins
+          ctx.strokeStyle = "#aabb99";
+          ctx.lineWidth = 0.7;
+          const dseed = m.rotation * 1000;
+          for (let i = 0; i < 5; i++) {
+            ctx.beginPath();
+            const x1 = Math.sin(dseed + i * 4.3) * m.radius * 0.6;
+            const y1 = Math.cos(dseed + i * 6.7) * m.radius * 0.6;
+            const x2 = Math.sin(dseed + i * 2.1 + 1) * m.radius * 0.5;
+            const y2 = Math.cos(dseed + i * 3.9 + 1) * m.radius * 0.5;
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+          }
+          // Metal flecks
+          ctx.fillStyle = "#ccbbaa";
+          ctx.globalAlpha = 0.5;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            const fx = Math.sin(dseed + i * 8.1) * m.radius * 0.35;
+            const fy = Math.cos(dseed + i * 5.3) * m.radius * 0.35;
+            ctx.arc(fx, fy, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case "normal":
+        default: {
+          const mg = ctx.createRadialGradient(-m.radius * 0.2, -m.radius * 0.2, 0, 0, 0, m.radius);
+          mg.addColorStop(0, `hsl(${m.hue},35%,40%)`);
+          mg.addColorStop(0.6, `hsl(${m.hue},30%,25%)`);
+          mg.addColorStop(1, `hsl(${m.hue},25%,12%)`);
+          ctx.fillStyle = mg;
+          ctx.fill();
+          ctx.strokeStyle = `hsla(${m.hue},20%,55%,0.3)`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          m.shape.craters.forEach(c => {
+            ctx.fillStyle = `hsla(${m.hue},20%,10%,0.4)`;
+            ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = `hsla(${m.hue},15%,35%,0.2)`;
+            ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.arc(c.x, c.y, c.r, Math.PI * 0.8, Math.PI * 1.8); ctx.stroke();
+          });
+          break;
+        }
+      }
 
       // HP indicator for multi-hit
       if (m.maxHp > 1) {
@@ -3879,6 +4513,11 @@ export function renderGame(ctx, state, skin) {
   // Enemy ships
   drawEnemies(ctx, state);
   drawEnemyProjectiles(ctx, state);
+
+  // NPC encounter ship
+  if (state.encounter) {
+    drawEncounterShip(ctx, state);
+  }
 
   // Boss rendering (between meteors and bullets layer)
   if (state.bossActive) {
@@ -4054,13 +4693,8 @@ export function renderGame(ctx, state, skin) {
   // Lightning arcs
   drawLightningArcs(ctx, state);
 
-  // Particles
-  state.particles.forEach(p => {
-    ctx.globalAlpha = p.life;
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2); ctx.fill();
-  });
-  ctx.globalAlpha = 1;
+  // Particles (pooled)
+  drawPoolParticles(ctx);
 
   // Trail particles & flame effects (world space, behind ship)
   if (!state.deathScene && skin) {
@@ -4285,6 +4919,18 @@ export function renderGame(ctx, state, skin) {
     ctx.fillStyle = "rgba(255,255,255,0.3)";
     ctx.fillText(zoneName, CANVAS_W / 2, 46);
 
+    // Zone change notification
+    if (state.zoneNotification && state.zoneNotificationTimer > 0) {
+      const zt = state.zoneNotificationTimer;
+      const zAlpha = zt > 150 ? (180 - zt) / 30 : zt < 30 ? zt / 30 : 1;
+      ctx.font = "700 16px 'Sora',sans-serif";
+      ctx.fillStyle = `rgba(255,200,80,${zAlpha * 0.9})`;
+      ctx.shadowColor = "rgba(255,150,0,0.6)";
+      ctx.shadowBlur = 12;
+      ctx.fillText("— " + state.zoneNotification + " —", CANVAS_W / 2, 92);
+      ctx.shadowBlur = 0;
+    }
+
     // Milestone notification flash
     if (state.milestoneNotification && state.milestoneNotificationTimer > 0) {
       const alpha = Math.min(1, state.milestoneNotificationTimer / 30);
@@ -4296,20 +4942,8 @@ export function renderGame(ctx, state, skin) {
       ctx.shadowBlur = 0;
     }
 
-    // Achievement notification
-    if (state.achievementNotification && state.achievementNotificationTimer > 0) {
-      const alpha = Math.min(1, state.achievementNotificationTimer / 30);
-      ctx.textAlign = "center";
-      ctx.font = "700 11px 'Sora',sans-serif";
-      ctx.fillStyle = `rgba(255,215,0,${alpha})`;
-      ctx.shadowColor = "rgba(255,215,0,0.6)";
-      ctx.shadowBlur = 15;
-      ctx.fillText("ACHIEVEMENT UNLOCKED", CANVAS_W / 2, 90);
-      ctx.font = "600 10px 'Sora',sans-serif";
-      ctx.fillStyle = `rgba(255,255,255,${alpha * 0.9})`;
-      ctx.fillText(state.achievementNotification, CANVAS_W / 2, 104);
-      ctx.shadowBlur = 0;
-    }
+    // Dramatic Achievement notification
+    _drawAchievementNotification(ctx, state);
 
     // Lives
     ctx.textAlign = "right";
@@ -4528,14 +5162,15 @@ export function renderGame(ctx, state, skin) {
   }
 
   // Zone notification
-  if (state.zoneNotification && state.zoneNotification.timer > 0) {
-    const t = state.zoneNotification.timer / 120;
+  // FIX: Use zoneNameNotification (object) instead of zoneNotification (string)
+  if (state.zoneNameNotification && state.zoneNameNotification.timer > 0) {
+    const t = state.zoneNameNotification.timer / 120;
     ctx.save();
     ctx.textAlign = "center";
     ctx.globalAlpha = (t < 0.2 ? t * 5 : (t > 0.7 ? (1 - t) / 0.3 : 1)) * 0.5;
     ctx.font = "500 11px 'Sora', sans-serif";
-    ctx.fillStyle = state.zoneNotification.color;
-    ctx.fillText(`ENTERING ${state.zoneNotification.name.toUpperCase()}`, CANVAS_W / 2, CANVAS_H / 2 - 60);
+    ctx.fillStyle = state.zoneNameNotification.color;
+    ctx.fillText(`ENTERING ${state.zoneNameNotification.name.toUpperCase()}`, CANVAS_W / 2, CANVAS_H / 2 - 60);
     ctx.restore();
   }
 
@@ -4548,6 +5183,226 @@ export function renderGame(ctx, state, skin) {
   if (state.deathScene) {
     drawDeathScene(ctx, state);
   }
+
+  // HUD frame (sci-fi viewport decoration, on top of everything)
+  if (!state.deathScene) {
+    drawHUDFrame(ctx);
+  }
+
+  ctx.restore();
+}
+
+// ── Dramatic Achievement Notification System ──
+
+export function showAchievementNotification(state, ach, playSound) {
+  state.achNotificationQueue.push({ ach, playSound });
+  if (!state.achNotification) {
+    const next = state.achNotificationQueue.shift();
+    _startAchNotification(state, next);
+  }
+}
+
+function _startAchNotification(state, entry) {
+  const { ach, playSound } = entry;
+  const sparkles = [];
+  for (let i = 0; i < 30; i++) {
+    sparkles.push({
+      x: CANVAS_W / 2 + (Math.random() - 0.5) * 60,
+      y: 100 + (Math.random() - 0.5) * 40,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4 - 1,
+      life: 1,
+      size: 1 + Math.random() * 2,
+      delay: Math.random() * 30,
+    });
+  }
+  state.achNotification = {
+    ach,
+    timer: 300,
+    maxTimer: 300,
+    phase: "intro",
+    sparkles,
+    rays: 0,
+  };
+  if (playSound) state.sfx.achievement = true;
+}
+
+function _easeOutBack(t) {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function _roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function _roundRectTop(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function _drawAchievementNotification(ctx, state) {
+  if (!state.achNotification) return;
+
+  const n = state.achNotification;
+  const t = n.timer / n.maxTimer;
+  const ach = n.ach;
+  const cat = ACHIEVEMENT_CATEGORIES.find(c => c.id === ach.cat);
+  const color = cat ? cat.color : "#ffaa00";
+
+  let slide = 1;
+  if (n.phase === "intro") {
+    const introT = (1 - t) / 0.15;
+    slide = _easeOutBack(Math.min(1, introT));
+  } else if (n.phase === "outro") {
+    const outroT = t / 0.15;
+    slide = Math.max(0, outroT);
+  }
+
+  const cardW = 320;
+  const cardH = 90;
+  const cardX = (CANVAS_W - cardW) / 2;
+  const cardY = 70 - (1 - slide) * 80;
+
+  ctx.save();
+
+  // Screen-wide light rays
+  ctx.save();
+  ctx.translate(CANVAS_W / 2, cardY + cardH / 2);
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 + n.rays * 0.02;
+    ctx.save();
+    ctx.rotate(angle);
+    const grad = ctx.createLinearGradient(0, 0, 200, 0);
+    grad.addColorStop(0, color + "60");
+    grad.addColorStop(1, "transparent");
+    ctx.fillStyle = grad;
+    ctx.globalAlpha = slide * 0.3;
+    ctx.fillRect(0, -3, 200, 6);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  // Card glow backdrop
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 30 * slide;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = slide * 0.15;
+  _roundRect(ctx, cardX - 10, cardY - 5, cardW + 20, cardH + 10, 16);
+  ctx.fill();
+  ctx.restore();
+
+  // Main card
+  ctx.save();
+  ctx.globalAlpha = slide * 0.97;
+
+  const cardGrad = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+  cardGrad.addColorStop(0, "rgba(20,20,30,0.97)");
+  cardGrad.addColorStop(1, "rgba(10,10,20,0.97)");
+  ctx.fillStyle = cardGrad;
+  _roundRect(ctx, cardX, cardY, cardW, cardH, 14);
+  ctx.fill();
+
+  // Color bar at top
+  ctx.fillStyle = color;
+  _roundRectTop(ctx, cardX, cardY, cardW, 4, 14);
+  ctx.fill();
+
+  // Border glow
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 10;
+  _roundRect(ctx, cardX, cardY, cardW, cardH, 14);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Trophy icon (left side, pulsing)
+  const iconX = cardX + 35;
+  const iconY = cardY + cardH / 2;
+  const iconPulse = 1 + Math.sin(n.rays * 0.1) * 0.08;
+
+  ctx.save();
+  ctx.translate(iconX, iconY);
+  ctx.scale(iconPulse, iconPulse);
+  ctx.fillStyle = color;
+  ctx.globalAlpha = slide * 0.3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = slide;
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 12;
+  ctx.font = "700 28px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("\u2605", 0, 0);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  // Text
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+
+  ctx.font = "700 9px 'Sora',sans-serif";
+  ctx.fillStyle = color;
+  ctx.fillText("ACHIEVEMENT UNLOCKED", cardX + 70, cardY + 28);
+
+  ctx.font = "800 17px 'Sora',sans-serif";
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 5;
+  ctx.fillText(ach.name, cardX + 70, cardY + 50);
+  ctx.shadowBlur = 0;
+
+  ctx.font = "500 11px 'Sora',sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fillText(ach.desc, cardX + 70, cardY + 67);
+
+  // Coin reward (right side)
+  ctx.textAlign = "right";
+  ctx.font = "800 14px 'Sora',sans-serif";
+  ctx.fillStyle = "#ffaa00";
+  ctx.shadowColor = "#ffaa00";
+  ctx.shadowBlur = 8;
+  ctx.fillText(`+${ach.reward}`, cardX + cardW - 18, cardY + 50);
+  ctx.font = "600 9px 'Sora',sans-serif";
+  ctx.fillText("COINS", cardX + cardW - 18, cardY + 65);
+  ctx.shadowBlur = 0;
+
+  ctx.restore();
+
+  // Sparkles
+  n.sparkles.forEach(s => {
+    if (s.delay > 0 || s.life <= 0) return;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 6;
+    ctx.globalAlpha = s.life;
+    ctx.fillRect(s.x - s.size / 2, s.y - s.size / 2, s.size, s.size);
+    ctx.restore();
+  });
 
   ctx.restore();
 }

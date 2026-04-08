@@ -3,8 +3,10 @@ import { generateDailyMissions, getDateSeedStr } from "./missions.js";
 import { ACHIEVEMENTS, ACHIEVEMENT_MIGRATION, getAchievement, checkAllAchievements } from "./achievements.js";
 import { claimDailyReward as claimDaily, checkDailyReward as checkDaily } from "./dailyReward.js";
 import { SKINS } from "./skins.js";
+import { getModule, STATION_MODULES, canBuild } from "./modules.js";
 
 const STORAGE_KEY = "shootblast_player";
+const STATION_VERSION = 2;
 
 const DEFAULT_DATA = {
   bestDistance: 0,
@@ -73,12 +75,21 @@ const DEFAULT_DATA = {
   // Drones
   ownedDrones: [],
   equippedDrones: [],
+
+  // Station
+  station: {
+    slots: [null, null, null, null, null, null, null, null],
+    unlockedSlots: 2,
+    researchedTech: [],
+    weaponsUnlocked: ["blaster"],
+  },
+  stationVersion: STATION_VERSION,
 };
 
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_DATA, achievements: { ...DEFAULT_DATA.achievements } };
+    if (!raw) return { ...DEFAULT_DATA, achievements: { ...DEFAULT_DATA.achievements }, station: { ...DEFAULT_DATA.station } };
     const parsed = JSON.parse(raw);
     const data = { ...DEFAULT_DATA, ...parsed };
 
@@ -88,6 +99,25 @@ function loadData() {
     }
 
     let migrated = false;
+
+    // Station v2 migration: reset station data for tech tree system
+    if ((data.stationVersion || 0) < STATION_VERSION) {
+      data.station = {
+        slots: [null, null, null, null, null, null, null, null],
+        unlockedSlots: 2,
+        researchedTech: [],
+        weaponsUnlocked: ["blaster"],
+      };
+      data.ownedWeapons = [{ id: "blaster", level: 0 }];
+      data.equippedWeapon = "blaster";
+      data.stationVersion = STATION_VERSION;
+      migrated = true;
+    }
+
+    // Ensure station has weaponsUnlocked
+    if (!data.station.weaponsUnlocked) {
+      data.station.weaponsUnlocked = ["blaster"];
+    }
 
     // Migration: laser → lightning
     if (data.equippedWeapon === "laser") {
@@ -247,9 +277,11 @@ export function processAchievements() {
 
 export function recordGame(distance, kills, wave, bestCombo, playTimeSeconds, powerupsCollected, noHitWaves, defeatedBosses, bossCoinsEarned, weaponId, nukesUsed, abilitiesUsed) {
   const data = loadData();
+  const buffs = getActiveBuffs();
   const baseCoins = Math.floor(distance / 100_000);
   const bossCoins = bossCoinsEarned || 0;
-  const coinsEarned = baseCoins + bossCoins;
+  const coinMult = 1 + (buffs.coin_mult || 0);
+  const coinsEarned = Math.floor((baseCoins + bossCoins) * coinMult);
   data.coins += coinsEarned;
   data.totalCoinsEarned += coinsEarned;
 
@@ -399,7 +431,7 @@ export function markTutorialSeen() {
 
 export function resetAllData() {
   localStorage.removeItem(STORAGE_KEY);
-  return { ...DEFAULT_DATA, achievements: { ...DEFAULT_DATA.achievements } };
+  return { ...DEFAULT_DATA, achievements: { ...DEFAULT_DATA.achievements }, station: { ...DEFAULT_DATA.station, slots: [...DEFAULT_DATA.station.slots], weaponsUnlocked: [...DEFAULT_DATA.station.weaponsUnlocked] } };
 }
 
 export function buySkin(skinId, price) {
@@ -506,11 +538,18 @@ export function buyPilot(pilotId, price) {
 
 export function buyDrone(droneId, price) {
   const data = loadData();
+  const buffs = getActiveBuffs();
+
+  // Check Drone Bay is built
+  if (!buffs.drone_slots || buffs.drone_slots === 0) {
+    return { success: false, error: "Drone Bay not built", data };
+  }
+
   if (data.coins < price) return { success: false, data };
   if (data.ownedDrones.includes(droneId)) return { success: false, data };
   data.coins -= price;
   data.ownedDrones.push(droneId);
-  if (data.equippedDrones.length < 2) {
+  if (data.equippedDrones.length < buffs.drone_slots) {
     data.equippedDrones.push(droneId);
   }
 
@@ -528,6 +567,10 @@ export function buyDrone(droneId, price) {
 
 export function equipDrone(droneId, slot) {
   const data = loadData();
+  const buffs = getActiveBuffs();
+  const maxSlots = buffs.drone_slots || 0;
+
+  if (slot >= maxSlots) return data;
   if (!data.ownedDrones.includes(droneId)) return data;
   data.equippedDrones[slot] = droneId;
   saveData(data);
@@ -624,4 +667,183 @@ export function claimDailyReward() {
     saveData(result.data);
   }
   return result;
+}
+
+// ── Station Functions ──
+
+export function startBuilding(slotIndex, moduleId) {
+  const data = loadData();
+  const mod = getModule(moduleId);
+  if (!mod) return { success: false };
+  if (slotIndex >= data.station.unlockedSlots) return { success: false };
+
+  // Check tech tree requirements
+  if (!canBuild(moduleId, data)) return { success: false };
+
+  const cost = mod.levels[0].buildCost;
+  const buildTime = mod.levels[0].buildTime;
+
+  if (data.coins < cost) return { success: false };
+  if (data.station.slots[slotIndex]) return { success: false };
+
+  data.coins -= cost;
+  data.station.slots[slotIndex] = {
+    moduleId,
+    level: 0,
+    lastCollected: Date.now(),
+    buildStartedAt: Date.now(),
+    buildEndsAt: Date.now() + buildTime,
+  };
+
+  saveData(data);
+  return { success: true, data };
+}
+
+export function upgradeModule(slotIndex) {
+  const data = loadData();
+  const slot = data.station.slots[slotIndex];
+  if (!slot) return { success: false };
+
+  const mod = getModule(slot.moduleId);
+  if (!mod || slot.level >= mod.levels.length - 1) return { success: false };
+  if (Date.now() < slot.buildEndsAt) return { success: false };
+
+  const nextLevel = slot.level + 1;
+  const cost = mod.levels[nextLevel].buildCost;
+  const buildTime = mod.levels[nextLevel].buildTime;
+
+  if (data.coins < cost) return { success: false };
+
+  data.coins -= cost;
+  slot.level = nextLevel;
+  slot.buildStartedAt = Date.now();
+  slot.buildEndsAt = Date.now() + buildTime;
+
+  saveData(data);
+  return { success: true, data };
+}
+
+export function removeModule(slotIndex) {
+  const data = loadData();
+  if (!data.station.slots[slotIndex]) return { success: false };
+  data.station.slots[slotIndex] = null;
+  saveData(data);
+  return { success: true, data };
+}
+
+export function collectFromModule(slotIndex) {
+  const data = loadData();
+  const slot = data.station.slots[slotIndex];
+  if (!slot) return { collected: 0, data };
+
+  const mod = getModule(slot.moduleId);
+  if (!mod || mod.type !== "resource") return { collected: 0, data };
+  if (Date.now() < slot.buildEndsAt) return { collected: 0, data };
+
+  const stats = mod.levels[slot.level];
+  const elapsed = Date.now() - slot.lastCollected;
+  const hours = Math.min(mod.maxStorage, elapsed / 3600000);
+  const coins = Math.floor(stats.coinsPerHour * hours);
+
+  if (coins > 0) {
+    data.coins += coins;
+    data.totalCoinsEarned += coins;
+    slot.lastCollected = Date.now();
+    saveData(data);
+  }
+
+  return { collected: coins, data };
+}
+
+// Check completed modules for weapon/slot unlocks and apply them
+export function checkModuleCompletions() {
+  const data = loadData();
+  const notifications = [];
+
+  data.station.slots.forEach(slot => {
+    if (!slot) return;
+    if (Date.now() < slot.buildEndsAt) return;
+
+    const mod = getModule(slot.moduleId);
+    if (!mod) return;
+    const stats = mod.levels[slot.level];
+    if (!stats) return;
+
+    // Unlock weapon if applicable
+    if (stats.unlocksWeapon && !data.station.weaponsUnlocked.includes(stats.unlocksWeapon)) {
+      data.station.weaponsUnlocked.push(stats.unlocksWeapon);
+      notifications.push({ type: "weapon", weapon: stats.unlocksWeapon });
+    }
+
+    // Unlock slots if command center
+    if (stats.unlocksSlots) {
+      const newSlots = Math.min(8, 2 + stats.unlocksSlots);
+      if (newSlots > data.station.unlockedSlots) {
+        const gained = newSlots - data.station.unlockedSlots;
+        data.station.unlockedSlots = newSlots;
+        notifications.push({ type: "slots", count: gained });
+      }
+    }
+  });
+
+  if (notifications.length > 0) saveData(data);
+  return { data, notifications };
+}
+
+export function getActiveBuffs() {
+  const data = loadData();
+  const buffs = {
+    coin_mult: 0,
+    damage_mult: 0,
+    powerup_duration: 0,
+    start_shield: 0,
+    drone_slots: 0,
+    drone_discount: 0,
+    upgrade_discount: 0,
+    start_powerups: 0,
+    all_stats: 0,
+  };
+
+  if (!data.station?.slots) return buffs;
+
+  data.station.slots.forEach(slot => {
+    if (!slot) return;
+    if (Date.now() < slot.buildEndsAt) return;
+
+    const mod = getModule(slot.moduleId);
+    if (!mod) return;
+
+    const stats = mod.levels[slot.level];
+    if (!stats) return;
+
+    // Apply all buffs from this module's stats (permanent)
+    if (stats.dmgBuff)         buffs.damage_mult += stats.dmgBuff;
+    if (stats.coinMult)        buffs.coin_mult += stats.coinMult;
+    if (stats.powerupDuration) buffs.powerup_duration += stats.powerupDuration;
+    if (stats.startShield)     buffs.start_shield = Math.max(buffs.start_shield, stats.startShield);
+    if (stats.droneSlots)      buffs.drone_slots = Math.max(buffs.drone_slots, stats.droneSlots);
+    if (stats.droneDiscount)   buffs.drone_discount = Math.max(buffs.drone_discount, stats.droneDiscount);
+    if (stats.upgradeDiscount) buffs.upgrade_discount = Math.max(buffs.upgrade_discount, stats.upgradeDiscount);
+    if (stats.startPowerups)   buffs.start_powerups = Math.max(buffs.start_powerups, stats.startPowerups);
+    if (stats.allStats) {
+      buffs.damage_mult += stats.allStats;
+      buffs.coin_mult += stats.allStats;
+      buffs.powerup_duration += stats.allStats;
+    }
+  });
+
+  return buffs;
+}
+
+export function getPendingStationCoins() {
+  const data = loadData();
+  return data.station.slots.reduce((sum, slot) => {
+    if (!slot) return sum;
+    const mod = getModule(slot.moduleId);
+    if (!mod || mod.type !== "resource") return sum;
+    if (Date.now() < slot.buildEndsAt) return sum;
+    const elapsed = Date.now() - slot.lastCollected;
+    const hours = Math.min(mod.maxStorage, elapsed / 3600000);
+    return sum + Math.floor(mod.levels[slot.level].coinsPerHour * hours);
+  }, 0);
 }

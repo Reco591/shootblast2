@@ -190,6 +190,7 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     const ctx = canvas.getContext("2d");
 
     // Reuse existing state if background was rendering, otherwise create new
+    const isFirstInit = !stateRef.current || !stateRef.current._initialized;
     if (!stateRef.current) {
       stateRef.current = createGameState();
     }
@@ -202,14 +203,17 @@ export default function GameScreen({ onGameOver, onBack, playerData, skinId, wea
     stateRef.current._premiumSkinId = skinId;
     stateRef.current.equippedDrones = equippedDrones;
     spawnDrones(stateRef.current);
-    // Apply station start_shield buff
-    const buffs = getActiveBuffs();
-    if (buffs.start_shield > 0) {
-      stateRef.current.activeEffects.shield = buffs.start_shield * 1000;
+    // Only reset run-specific state on first init (not on ad-revive re-run)
+    if (isFirstInit) {
+      const buffs = getActiveBuffs();
+      if (buffs.start_shield > 0) {
+        stateRef.current.activeEffects.shield = buffs.start_shield * 1000;
+      }
+      stateRef.current.bestCombo = 0;
+      stateRef.current.bossDefeatedList = []; // Reset every game — bosses respawn each playthrough
+      startTimeRef.current = performance.now();
+      stateRef.current._initialized = true;
     }
-    stateRef.current.bestCombo = 0;
-    stateRef.current.bossDefeatedList = []; // Reset every game — bosses respawn each playthrough
-    startTimeRef.current = performance.now();
     const skin = skinRef.current;
 
     initAudio(soundEnabled, false, playerData.soundVolume, 0); // no music during gameplay
